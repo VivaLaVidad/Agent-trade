@@ -11,8 +11,8 @@ agents.intent_clarifier — 意图澄清反问节点
 工作流位置::
 
     analyze_node → [clarification_needed?]
-                     ├─ True  → clarifier_node → analyze_node（重入）
-                     └─ False → [is_valid_lead?] → ...
+                     ├─ True  → clarifier_node → END（本轮结束；买家补答后由业务层重新触发工作流）
+                     └─ False → [is_valid_lead?] → draft_node / END
 """
 
 from __future__ import annotations

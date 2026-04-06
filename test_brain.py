@@ -15,6 +15,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src
 from agents.workflow_graph import build_trade_graph
 
 
+def test_build_trade_graph_smoke() -> None:
+    """pytest 收集用：确保邮件工作流图可编译（无需 Ollama）。"""
+    graph = build_trade_graph()
+    assert graph is not None
+
+
 # ─── 测试邮件：冗长 + 大量拼写错误的真实询盘 ────────────────
 TEST_INQUIRY: str = """\
 Subject: RE: URGNET - Need quoation for solar panles and invertors ASAP!!!

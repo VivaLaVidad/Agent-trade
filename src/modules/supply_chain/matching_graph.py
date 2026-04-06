@@ -155,6 +155,7 @@ def tiered_quote_node(state: MatchState) -> dict[str, Any]:
     从 negotiation_result 中提取阶梯报价，初始化谈判状态机。
     在自动模式下（无 buyer_selection），自动选择 Option A 继续。
     在交互模式下，返回阶梯报价看板等待买家选择。
+    每轮卖家/买家动作结束后尝试写入 ``negotiation_rounds`` 表。
     """
     from modules.supply_chain.negotiation_state import NegotiationStateMachine
 
@@ -194,6 +195,7 @@ def tiered_quote_node(state: MatchState) -> dict[str, Any]:
         if action == "accept":
             nsm.submit_buyer_response("accept")
             logger.info("买家接受报价: option=%s", selected_option)
+            _persist_negotiation_rounds(nsm)
             return {
                 "negotiation_status": "accepted",
                 "negotiation_round": nsm.current_round,
@@ -201,12 +203,14 @@ def tiered_quote_node(state: MatchState) -> dict[str, Any]:
             }
         elif action == "counter":
             nsm.submit_buyer_response("counter", buyer_selection.get("counter_offer"))
+            _persist_negotiation_rounds(nsm)
             return {
                 "negotiation_status": "counter_offer",
                 "negotiation_round": nsm.current_round,
             }
         else:
             nsm.submit_buyer_response("reject")
+            _persist_negotiation_rounds(nsm)
             return {
                 "negotiation_status": "rejected",
                 "negotiation_round": nsm.current_round,
@@ -216,11 +220,32 @@ def tiered_quote_node(state: MatchState) -> dict[str, Any]:
     # 无 buyer_selection → 自动接受 Option A（演示/自动化模式）
     nsm.submit_buyer_response("accept")
     logger.info("自动模式: 默认接受 Option A 报价")
+    _persist_negotiation_rounds(nsm)
     return {
         "negotiation_status": "accepted",
         "negotiation_round": nsm.current_round,
         "status": "approved",
     }
+
+
+def _persist_negotiation_rounds(nsm: Any) -> None:
+    """将谈判状态机中已产生的轮次写入 negotiation_rounds 表（同步封装 async）。"""
+    import asyncio
+
+    if not getattr(nsm, "rounds", None):
+        return
+
+    async def _flush() -> None:
+        for rec in nsm.rounds:
+            await nsm.persist_round(rec)
+
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(_flush())
+    except Exception as exc:
+        logger.warning("谈判轮次持久化跳过: %s", exc)
+    finally:
+        loop.close()
 
 
 _PO_PROMPT: str = """\
@@ -326,11 +351,12 @@ def _persist_po(po_data: dict, match_data: dict) -> None:
 
 
 def _route_after_negotiation(state: MatchState) -> str:
-    """谈判后路由：有阶梯报价 → 报价看板；否则直接结束"""
+    """谈判后路由：仅正式 approved 且存在阶梯报价时才进报价看板，避免平替自动成交。"""
     tiered = state.get("tiered_quotes", [])
-    if tiered:
+    approved_flow = state.get("status") == "approved"
+    if approved_flow and tiered:
         return "tiered_quotes"
-    if state.get("status") == "approved":
+    if approved_flow:
         return "generate_po"
     return "finish"
 

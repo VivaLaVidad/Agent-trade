@@ -136,8 +136,8 @@ class WorkflowOrchestrator:
         Returns
         -------
         dict[str, Any]
-            工作流最终状态快照，包含 analyzed_intent /
-            generated_response / is_valid_lead
+            工作流最终状态快照：analyzed_intent、generated_response、is_valid_lead、
+            clarification_*（澄清反问相关）
         """
         initial_state: TradeState = {"raw_inquiry": intent_text}
         config: dict = {"configurable": {"thread_id": session_id}}
@@ -150,4 +150,7 @@ class WorkflowOrchestrator:
             "analyzed_intent": final_state.get("analyzed_intent"),
             "generated_response": final_state.get("generated_response", ""),
             "is_valid_lead": final_state.get("is_valid_lead", False),
+            "clarification_needed": final_state.get("clarification_needed", False),
+            "clarification_questions": final_state.get("clarification_questions", []),
+            "clarification_round": final_state.get("clarification_round", 0),
         }

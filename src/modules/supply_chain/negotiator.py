@@ -77,12 +77,10 @@ class NegotiatorAgent:
 
         best = approved[0] if approved else (alternatives[0] if alternatives else None)
 
-        # ── 为通过的候选生成阶梯报价看板 ──
+        # ── 仅为正式 approved 候选生成阶梯报价（避免「仅平替」走自动成交流程）──
         tiered_quotes: list[dict[str, Any]] = []
-        quote_candidates = approved if approved else alternatives[:2]
-        if quote_candidates:
-            # 从原始 candidates 中找到对应的完整数据
-            approved_ids = {r.get("sku_id") for r in quote_candidates}
+        if approved:
+            approved_ids = {r.get("sku_id") for r in approved}
             full_candidates = [c for c in candidates if c.get("sku_id") in approved_ids]
             tiered_quotes = self._tiered.generate_multi_candidate_tiers(
                 full_candidates, demand, top_n=3,
@@ -92,6 +90,11 @@ class NegotiatorAgent:
                     log.append(
                         f"[TIER] {TieredQuoteEngine.format_tier_display(tier)}"
                     )
+        elif alternatives:
+            log.append(
+                "[TIER] 无 approved 候选，跳过阶梯报价看板；"
+                "平替/超预算方案仅供人工或下轮谈判处理",
+            )
 
         logger.info(
             "谈判完成: approved=%d alternatives=%d bundling=%d tiered=%d",
