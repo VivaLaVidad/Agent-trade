@@ -24,6 +24,7 @@ from core.security import MachineAuth, require_machine_auth
 from core.agent_context import AgentContext
 from agents.workflow_graph import WorkflowOrchestrator
 from database.models import async_engine, create_tables
+from database.pg_checkpointer import get_pg_checkpointer, shutdown_pg_checkpointer
 from database.task_recovery import TaskRecoveryManager
 from monitor.heartbeat import HeartbeatMonitor
 
@@ -70,8 +71,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.recovery = recovery
     app.state.heartbeat = heartbeat
 
-    # 5. 数据库 + 工作流编排器
+    # 5. 数据库 + LangGraph 检查点预热 + 工作流编排器（须先 PG 池再构图）
     await create_tables()
+    await get_pg_checkpointer()
     app.state.orchestrator = WorkflowOrchestrator()
 
     logger.info("Project Claw 系统就绪 — 已加载模块: %s",
@@ -81,6 +83,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     await watchdog.stop()
     await heartbeat.stop()
+    await shutdown_pg_checkpointer()
     await async_engine.dispose()
     logger.info("系统已关闭")
 

@@ -204,23 +204,18 @@ def get_cipher() -> AESCipher:
 class IdempotencyGuard:
     """金融级幂等防护 —— 防止重复交易指令
 
-    所有 ExecuteTrade 指令在发送给 rpa_engine 前，必须通过本守卫校验：
-    同一 trade_id 在 TTL 窗口内（默认 60 分钟）仅允许触发一次物理指令，
-    防止因网络抖动导致商家重复扣款或重复发货。
-
-    存储后端：
-      - 优先使用 PostgreSQL（idempotency_keys 表）
-      - 降级为进程内 dict（重启后丢失，仅适用于单进程）
-
-    线程安全：通过 asyncio.Lock 保证并发安全。
+    持久化使用 SQLAlchemy 模型 ``IdempotencyKey``（create_tables 时创建），
+    支持 PostgreSQL / SQLite；主键冲突即视为重复请求。
+    数据库不可用时降级为进程内 dict（单进程有效）。
     """
 
     _DEFAULT_TTL_SECONDS: int = 3600  # 60 分钟
 
     def __init__(self, ttl_seconds: int = _DEFAULT_TTL_SECONDS) -> None:
         self._ttl = ttl_seconds
-        self._local_cache: dict[str, float] = {}  # trade_id → expiry_ts
-        self._lock = None  # 延迟初始化 asyncio.Lock
+        self._local_cache: dict[str, float] = {}  # trade_id → unix expiry
+        self._lock = None
+        self._db_warned: bool = False
 
     def _get_lock(self):
         if self._lock is None:
@@ -228,93 +223,120 @@ class IdempotencyGuard:
             self._lock = asyncio.Lock()
         return self._lock
 
+    @staticmethod
+    def _utc_expiry(seconds: int):
+        from datetime import datetime, timedelta, timezone
+
+        return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).replace(tzinfo=None)
+
     async def check_and_acquire(self, trade_id: str) -> bool:
-        """检查 trade_id 是否可执行，若可执行则原子性地占位
-
-        Parameters
-        ----------
-        trade_id : str
-            交易唯一标识（通常为 transaction_id 或 po_number）
-
-        Returns
-        -------
-        bool
-            True = 首次执行，已成功占位
-            False = 重复请求，应拒绝执行
-        """
         import time
+        from datetime import datetime, timezone
 
         async with self._get_lock():
-            now = time.time()
-
-            # 清理过期条目
-            expired = [k for k, v in self._local_cache.items() if v < now]
+            now_ts = time.time()
+            expired = [k for k, v in self._local_cache.items() if v < now_ts]
             for k in expired:
                 del self._local_cache[k]
 
-            # 检查是否已存在
             if trade_id in self._local_cache:
                 logger.warning(
-                    "幂等拦截: trade_id=%s 在 %ds 窗口内重复触发，已拒绝",
-                    trade_id[:16], self._ttl,
+                    "幂等拦截(内存): trade_id=%s 在窗口内重复",
+                    trade_id[:16],
                 )
                 return False
 
-            # 占位
-            self._local_cache[trade_id] = now + self._ttl
+            db_inserted = await self._try_acquire_db(trade_id)
+            if db_inserted is False:
+                return False
+            if db_inserted is True:
+                self._local_cache[trade_id] = now_ts + self._ttl
+                logger.info("幂等通过: trade_id=%s TTL=%ds (DB+内存)", trade_id[:16], self._ttl)
+                return True
 
-            # 异步持久化到数据库（尽力而为，不阻塞主流程）
-            try:
-                await self._persist_key(trade_id, now)
-            except Exception as exc:
-                logger.debug("幂等键持久化失败（非致命）: %s", exc)
-
-            logger.info(
-                "幂等通过: trade_id=%s TTL=%ds",
-                trade_id[:16], self._ttl,
-            )
+            # db_inserted is None → 表不可用，仅内存
+            self._local_cache[trade_id] = now_ts + self._ttl
+            logger.info("幂等通过: trade_id=%s TTL=%ds (仅内存)", trade_id[:16], self._ttl)
             return True
 
-    async def release(self, trade_id: str) -> None:
-        """手动释放幂等键（用于事务回滚场景）"""
-        async with self._get_lock():
-            self._local_cache.pop(trade_id, None)
-            logger.info("幂等键已释放: trade_id=%s", trade_id[:16])
-
-    async def _persist_key(self, trade_id: str, timestamp: float) -> None:
-        """将幂等键写入数据库（跨进程去重）"""
+    async def _try_acquire_db(self, trade_id: str) -> bool | None:
+        """True=新插入成功，False=已存在或冲突，None=跳过 DB"""
         try:
-            from database.models import AsyncSessionFactory
-            from sqlalchemy import text
+            from datetime import datetime, timezone
+
+            from sqlalchemy import delete, select
+            from sqlalchemy.exc import IntegrityError
+
+            from database.models import AsyncSessionFactory, IdempotencyKey
+
+            now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
 
             async with AsyncSessionFactory() as session:
                 await session.execute(
-                    text(
-                        "INSERT INTO idempotency_keys (trade_id, created_at, expires_at) "
-                        "VALUES (:tid, NOW(), NOW() + (CAST(:ttl AS INTEGER) * INTERVAL '1 second')) "
-                        "ON CONFLICT (trade_id) DO NOTHING"
-                    ),
-                    {"tid": trade_id, "ttl": int(self._ttl)},
+                    delete(IdempotencyKey).where(IdempotencyKey.expires_at < now_naive),
                 )
+                if await session.scalar(
+                    select(IdempotencyKey.trade_id).where(
+                        IdempotencyKey.trade_id == trade_id,
+                        IdempotencyKey.expires_at > now_naive,
+                    ),
+                ) is not None:
+                    logger.warning("幂等拦截(DB): trade_id=%s", trade_id[:16])
+                    await session.rollback()
+                    return False
+
+                session.add(
+                    IdempotencyKey(
+                        trade_id=trade_id,
+                        expires_at=self._utc_expiry(int(self._ttl)),
+                    ),
+                )
+                try:
+                    await session.commit()
+                except IntegrityError:
+                    await session.rollback()
+                    return False
+            return True
+        except Exception as exc:
+            if not self._db_warned:
+                logger.warning("幂等表不可用，降级内存模式: %s", exc)
+                self._db_warned = True
+            return None
+
+    async def release(self, trade_id: str) -> None:
+        from sqlalchemy import delete
+
+        from database.models import AsyncSessionFactory, IdempotencyKey
+
+        async with self._get_lock():
+            self._local_cache.pop(trade_id, None)
+        try:
+            async with AsyncSessionFactory() as session:
+                await session.execute(delete(IdempotencyKey).where(IdempotencyKey.trade_id == trade_id))
                 await session.commit()
         except Exception:
-            pass  # 降级为仅内存模式
+            pass
+        logger.info("幂等键已释放: trade_id=%s", trade_id[:16])
 
     async def check_db(self, trade_id: str) -> bool:
-        """从数据库检查幂等键是否存在（跨进程恢复）"""
         try:
-            from database.models import AsyncSessionFactory
-            from sqlalchemy import text
+            from datetime import datetime, timezone
 
+            from sqlalchemy import select
+
+            from database.models import AsyncSessionFactory, IdempotencyKey
+
+            now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
             async with AsyncSessionFactory() as session:
-                result = await session.execute(
-                    text(
-                        "SELECT 1 FROM idempotency_keys "
-                        "WHERE trade_id = :tid AND expires_at > NOW()"
-                    ),
-                    {"tid": trade_id},
+                return (
+                    await session.scalar(
+                        select(IdempotencyKey.trade_id).where(
+                            IdempotencyKey.trade_id == trade_id,
+                            IdempotencyKey.expires_at > now_naive,
+                        ),
+                    )
+                    is not None
                 )
-                return result.scalar() is not None
         except Exception:
             return False
 

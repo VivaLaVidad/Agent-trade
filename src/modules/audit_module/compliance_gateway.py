@@ -17,6 +17,7 @@ modules.audit_module.compliance_gateway — 暗箱合规网关
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import re
@@ -103,19 +104,24 @@ class ComplianceGateway:
         str
             审计记录的 SHA256 摘要（可用于关联查询）
         """
-        # 1. 计算数据指纹
+        # 1. 指纹 + 业务载荷 AES 封装（detail 不落明文敏感字段，避免内存/二次日志扩散）
         data_json = json.dumps(raw_data, ensure_ascii=False, sort_keys=True, default=str)
         data_hash = hashlib.sha256(data_json.encode("utf-8")).hexdigest()
+        enc_blob = get_cipher().encrypt_string(data_json)
+        keys = list(raw_data.keys()) if isinstance(raw_data, dict) else []
+        detail_safe = {
+            "data_hash": data_hash,
+            "data_size": len(data_json),
+            "top_level_key_count": len(keys),
+            "top_level_keys": sorted(keys)[:200],
+            "payload_aes_gcm_b64": base64.b64encode(enc_blob).decode("ascii"),
+        }
 
-        # 2. 写入加密审计日志
+        # 2. 写入加密审计日志（整行仍由 StealthLogger 再加密）
         self._get_audit_logger().log_event(
             module=module,
             action=action,
-            detail={
-                "data_hash": data_hash,
-                "data_size": len(data_json),
-                **raw_data,
-            },
+            detail=detail_safe,
             operator=operator,
         )
 

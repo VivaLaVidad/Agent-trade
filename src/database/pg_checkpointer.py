@@ -1,17 +1,12 @@
 """
-database.pg_checkpointer — 分布式 PostgreSQL 状态持久化
-──────────────────────────────────────────────────────
-职责：
-  1. 将 LangGraph 工作流状态从 MemorySaver 迁移至 PostgreSQL
-  2. 基于 langgraph-checkpoint-postgres 的 AsyncPostgresSaver
-  3. 实现 99.99% 高可用：Hub 崩溃后从数据库加载状态断点恢复
-  4. 提供统一的 checkpointer 工厂函数，供所有工作流图使用
-  5. 回退机制：PostgreSQL 不可用时降级为 MemorySaver
-
-架构要点：
-  - 所有 TradeState / MatchState 上下文持久化至 PG
-  - 谈判状态机（报价博弈、询价阶段）可从断点自动恢复
-  - thread_id 作为分区键，支持多租户并发
+database.pg_checkpointer — LangGraph 检查点（PostgreSQL 连接池 + 内存降级）
+──────────────────────────────────────────────────────────────────────
+说明（与 LangGraph 2.x 对齐）：
+  - ``AsyncPostgresSaver.from_conn_string`` 在新版中为 **async 上下文管理器**，
+    不适合作为进程级单例持有；工业做法是用 **psycopg_pool.AsyncConnectionPool**
+    + ``AsyncPostgresSaver(conn=pool)``，在应用生命周期内保持池开启。
+  - 状态恢复使用官方 ``aget_tuple(config)``，读取 ``checkpoint["channel_values"]``。
+  - SQLite / 缺依赖 / 建连失败 → ``MemorySaver``（单进程、非跨机恢复）。
 """
 
 from __future__ import annotations
@@ -20,192 +15,168 @@ import asyncio
 from typing import Any
 
 from langgraph.checkpoint.memory import MemorySaver
+from langchain_core.runnables import RunnableConfig
 
 from core.logger import get_logger
 
 logger = get_logger(__name__)
 
-# 全局单例缓存
-_checkpointer_instance = None
+_checkpointer_instance: Any = None
+_pg_pool: Any = None
+# Postgres URL 下、尚未 await get_pg_checkpointer 时，构图仅用此 MemorySaver，不占用 _checkpointer_instance
+_sync_compile_memory: MemorySaver | None = None
 _checkpointer_lock = asyncio.Lock()
 
 
+def _database_url() -> str:
+    from database.models import DBSettings
+
+    return DBSettings().DATABASE_URL
+
+
+def _to_psycopg_conninfo(url: str) -> str:
+    return url.replace("postgresql+asyncpg://", "postgresql://")
+
+
+async def shutdown_pg_checkpointer() -> None:
+    """应用停机时关闭连接池并清空单例（幂等）。"""
+    global _checkpointer_instance, _pg_pool, _sync_compile_memory
+
+    _checkpointer_instance = None
+    _sync_compile_memory = None
+    if _pg_pool is not None:
+        try:
+            await _pg_pool.close()
+        except Exception as exc:
+            logger.warning("PostgreSQL 连接池关闭异常: %s", exc)
+        finally:
+            _pg_pool = None
+
+
+async def _build_postgres_checkpointer():
+    global _pg_pool, _checkpointer_instance
+
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+    from psycopg_pool import AsyncConnectionPool
+
+    conninfo = _to_psycopg_conninfo(_database_url())
+    pool = AsyncConnectionPool(
+        conninfo=conninfo,
+        min_size=1,
+        max_size=10,
+        open=False,
+        kwargs={"autocommit": True, "prepare_threshold": 0},
+    )
+    await pool.open()
+    saver = AsyncPostgresSaver(conn=pool)
+    await saver.setup()
+    _pg_pool = pool
+    _checkpointer_instance = saver
+    logger.info("PostgreSQL Checkpointer 已就绪（连接池 + AsyncPostgresSaver）")
+    return _checkpointer_instance
+
+
 async def get_pg_checkpointer():
-    """获取 AsyncPostgresSaver 实例（单例 + 自动初始化）
-
-    首次调用时：
-      1. 从 DATABASE_URL 环境变量读取 PostgreSQL 连接串
-      2. 创建 AsyncPostgresSaver 并调用 .setup() 初始化表结构
-      3. 缓存实例供后续复用
-
-    如果 PostgreSQL 不可用，降级为 MemorySaver 并记录警告。
-
-    Returns
-    -------
-    AsyncPostgresSaver | MemorySaver
-        LangGraph 兼容的 checkpointer 实例
-    """
+    """异步获取 checkpointer（推荐在 lifespan 中预热）。"""
     global _checkpointer_instance
 
-    if _checkpointer_instance is not None:
-        return _checkpointer_instance
+    url = _database_url()
 
     async with _checkpointer_lock:
-        # 双重检查
         if _checkpointer_instance is not None:
             return _checkpointer_instance
 
-        try:
-            from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-            from database.models import DBSettings
-
-            db_url = DBSettings().DATABASE_URL
-
-            # langgraph-checkpoint-postgres 需要原生 psycopg 连接串
-            # 将 asyncpg 格式转换为 psycopg 格式
-            pg_conn_str = db_url.replace("postgresql+asyncpg://", "postgresql://")
-
-            saver = AsyncPostgresSaver.from_conn_string(pg_conn_str)
-            await saver.setup()
-
-            _checkpointer_instance = saver
-            logger.info(
-                "PostgreSQL Checkpointer 已就绪 — 状态持久化已启用 (高可用模式)"
-            )
+        if "sqlite" in url.lower():
+            _checkpointer_instance = MemorySaver()
+            logger.info("SQLite 环境 — 使用 MemorySaver 检查点")
             return _checkpointer_instance
 
-        except ImportError:
-            logger.warning(
-                "langgraph-checkpoint-postgres 未安装，降级为 MemorySaver。"
-                "安装命令: pip install langgraph-checkpoint-postgres"
-            )
+        try:
+            return await _build_postgres_checkpointer()
+        except ImportError as exc:
+            logger.warning("缺少依赖（psycopg_pool / checkpoint-postgres）: %s — MemorySaver", exc)
             _checkpointer_instance = MemorySaver()
             return _checkpointer_instance
-
         except Exception as exc:
-            logger.warning(
-                "PostgreSQL Checkpointer 初始化失败: %s — 降级为 MemorySaver", exc
-            )
+            logger.warning("PostgreSQL Checkpointer 初始化失败: %s — MemorySaver", exc)
             _checkpointer_instance = MemorySaver()
             return _checkpointer_instance
 
 
 def get_pg_checkpointer_sync():
-    """同步版本：获取 checkpointer（用于非异步上下文的图构建）
+    """同步获取（``graph.compile`` 时调用）。
 
-    如果异步实例已缓存，直接返回。
-    否则尝试同步初始化，失败则降级为 MemorySaver。
-
-    Returns
-    -------
-    AsyncPostgresSaver | MemorySaver
+    工业约定：在 FastAPI ``lifespan`` 内先 ``await get_pg_checkpointer()`` 建好连接池，
+    再实例化 ``WorkflowOrchestrator``，此处即返回已缓存的 PG saver。
+    Postgres 且尚未预热时：使用单独的 ``MemorySaver``，**不**写入 ``_checkpointer_instance``，
+    避免阻塞后续异步连接池初始化。
     """
-    global _checkpointer_instance
+    global _checkpointer_instance, _sync_compile_memory
 
     if _checkpointer_instance is not None:
         return _checkpointer_instance
 
-    try:
-        from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-        from database.models import DBSettings
-
-        db_url = DBSettings().DATABASE_URL
-        pg_conn_str = db_url.replace("postgresql+asyncpg://", "postgresql://")
-
-        saver = AsyncPostgresSaver.from_conn_string(pg_conn_str)
-
-        # setup() 需要异步调用，在同步上下文中通过 event loop 执行
-        loop = asyncio.new_event_loop()
-        try:
-            loop.run_until_complete(saver.setup())
-        finally:
-            loop.close()
-
-        _checkpointer_instance = saver
-        logger.info("PostgreSQL Checkpointer (sync init) 已就绪")
-        return _checkpointer_instance
-
-    except ImportError:
-        logger.warning("langgraph-checkpoint-postgres 未安装，降级为 MemorySaver")
+    url = _database_url()
+    if "sqlite" in url.lower():
         _checkpointer_instance = MemorySaver()
         return _checkpointer_instance
 
-    except Exception as exc:
-        logger.warning("PostgreSQL Checkpointer sync init 失败: %s — 降级", exc)
-        _checkpointer_instance = MemorySaver()
-        return _checkpointer_instance
+    if _sync_compile_memory is None:
+        logger.info(
+            "Checkpointer 尚未异步预热 — 构图使用独立 MemorySaver；"
+            "生产请在 lifespan 内先 await get_pg_checkpointer() 再构图",
+        )
+        _sync_compile_memory = MemorySaver()
+    return _sync_compile_memory
 
 
 async def recover_trade_state(thread_id: str) -> dict[str, Any] | None:
-    """从 PostgreSQL 恢复指定 thread_id 的最新工作流状态
-
-    用于 Hub 崩溃后的断点恢复：
-      1. 查询 checkpointer 中该 thread_id 的最新 checkpoint
-      2. 返回完整的 TradeState / MatchState 快照
-      3. 调用方可基于此状态重新 invoke 工作流
-
-    Parameters
-    ----------
-    thread_id : str
-        工作流线程标识（通常为 session_id 或 negotiation_id）
-
-    Returns
-    -------
-    dict | None
-        最新状态快照，或 None（无历史记录）
-    """
+    """使用 ``aget_tuple`` 读取该 thread 最新 checkpoint 的 channel_values。"""
     checkpointer = await get_pg_checkpointer()
 
     if isinstance(checkpointer, MemorySaver):
-        # MemorySaver 不支持跨进程恢复
         logger.debug("MemorySaver 模式，无法跨进程恢复 thread=%s", thread_id)
         return None
 
+    config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
     try:
-        config = {"configurable": {"thread_id": thread_id}}
-        checkpoint = await checkpointer.aget(config)
-
-        if checkpoint is None:
-            logger.info("未找到 thread=%s 的历史状态", thread_id)
+        tup = await checkpointer.aget_tuple(config)
+        if tup is None:
+            logger.info("未找到 thread=%s 的检查点", thread_id)
             return None
-
-        # checkpoint 结构: {"channel_values": {...state...}, ...}
-        state = checkpoint.get("channel_values", {})
-        logger.info(
-            "已恢复 thread=%s 的工作流状态 (keys=%d)",
-            thread_id, len(state),
-        )
-        return dict(state)
-
+        chk = tup.checkpoint
+        if not isinstance(chk, dict):
+            return None
+        vals = chk.get("channel_values")
+        if not isinstance(vals, dict):
+            return {}
+        logger.info("已恢复 thread=%s 状态字段数=%d", thread_id, len(vals))
+        return dict(vals)
     except Exception as exc:
-        logger.error("状态恢复失败 thread=%s: %s", thread_id, exc)
+        logger.error("aget_tuple 恢复失败 thread=%s: %s", thread_id, exc)
         return None
 
 
 async def list_active_threads(limit: int = 100) -> list[dict[str, Any]]:
-    """列出所有活跃的工作流线程（用于崩溃恢复扫描）
-
-    Returns
-    -------
-    list[dict]
-        每个元素包含 thread_id 和最后更新时间
-    """
+    """枚举最近检查点（依赖 ``alist``；过滤失败时返回空列表）。"""
     checkpointer = await get_pg_checkpointer()
 
     if isinstance(checkpointer, MemorySaver):
         return []
 
+    out: list[dict[str, Any]] = []
     try:
-        threads = []
-        async for checkpoint_tuple in checkpointer.alist(limit=limit):
-            config = checkpoint_tuple.config
-            tid = config.get("configurable", {}).get("thread_id", "")
-            threads.append({
-                "thread_id": tid,
-                "checkpoint_id": checkpoint_tuple.checkpoint.get("id", ""),
+        n = 0
+        async for ct in checkpointer.alist(None, limit=limit):
+            cfg = ct.config.get("configurable", {}) if isinstance(ct.config, dict) else {}
+            out.append({
+                "thread_id": cfg.get("thread_id", ""),
+                "checkpoint_id": cfg.get("checkpoint_id", ""),
             })
-        return threads
-
+            n += 1
+            if n >= limit:
+                break
     except Exception as exc:
-        logger.error("列出活跃线程失败: %s", exc)
+        logger.warning("alist 枚举检查点失败: %s", exc)
         return []
+    return out

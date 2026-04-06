@@ -30,6 +30,31 @@ def test_tick_pricing_audit_trail() -> None:
     assert len(trail["signature"]) == 64
 
 
+def test_compliance_encrypt_and_log_no_plaintext_in_detail() -> None:
+    from unittest.mock import MagicMock, patch
+
+    from modules.audit_module.compliance_gateway import ComplianceGateway
+
+    g = ComplianceGateway()
+    mock_cipher = MagicMock()
+    mock_cipher.encrypt_string.return_value = b"\x00fake_gcm_blob"
+    mock_log = MagicMock()
+    with (
+        patch("modules.audit_module.compliance_gateway.get_cipher", return_value=mock_cipher),
+        patch.object(ComplianceGateway, "_get_audit_logger", return_value=mock_log),
+    ):
+        g.encrypt_and_log(
+            "test_mod",
+            "test_act",
+            {"secret_field": "x", "buyer_email": "a@b.com", "ok": 1},
+        )
+    detail = mock_log.log_event.call_args.kwargs["detail"]
+    assert "secret_field" not in detail and "buyer_email" not in detail
+    assert detail.get("data_hash") and detail.get("payload_aes_gcm_b64")
+    assert "ok" not in detail
+    mock_cipher.encrypt_string.assert_called_once()
+
+
 def test_compliance_gateway_sanitize() -> None:
     from modules.audit_module.compliance_gateway import ComplianceGateway
 

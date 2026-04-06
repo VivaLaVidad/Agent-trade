@@ -386,6 +386,17 @@ class CampaignMessage(Base):
     campaign: Mapped[EmailCampaign] = relationship(back_populates="messages")
 
 
+class IdempotencyKey(Base):
+    """金融幂等键 —— 跨进程去重（与 core.security.IdempotencyGuard 配套）"""
+
+    __tablename__ = "idempotency_keys"
+    __table_args__ = (Index("ix_idempotency_expires_at", "expires_at"),)
+
+    trade_id: Mapped[str] = mapped_column(String(256), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+
+
 class GeneratedDocument(Base):
     """AI 生成的商业文档（报价单/合同/发票）"""
     __tablename__ = "generated_documents"

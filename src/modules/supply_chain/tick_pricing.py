@@ -33,48 +33,17 @@ modules.supply_chain.tick_pricing — Bloomberg-级 Tick-by-Tick 动态定价引
 from __future__ import annotations
 
 import hashlib
-import random
 import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from modules.supply_chain.pricing_sources import (
+    FxVolatilitySource,
+    build_fx_volatility_source,
+)
 from core.logger import get_logger
 
 logger = get_logger(__name__)
-
-
-class MarketVolatilityOracle:
-    """汇率波动率预言机（当前为 mock，接口兼容真实 Forex API）
-
-    提供 7 日滚动波动率、当前汇率偏移量、波动方向。
-    生产环境接入 exchangerate-api.com 或 Bloomberg B-PIPE。
-    """
-
-    @staticmethod
-    def get_fx_volatility(currency_pair: str = "USD/CNY") -> dict[str, Any]:
-        """获取指定货币对的波动率快照
-
-        Returns
-        -------
-        dict
-            volatility_7d: 7日年化波动率 (0-1)
-            fx_drift: 当前汇率偏移方向 (-1 ~ +1)
-            fx_rate_mid: 中间价
-            confidence: 数据置信度 (0-1)
-        """
-        # Mock: 模拟真实市场波动特征
-        vol_7d = round(random.uniform(0.02, 0.18), 4)
-        drift = round(random.uniform(-0.5, 0.5), 4)
-        mid_rate = 7.25 + random.uniform(-0.15, 0.15)
-
-        return {
-            "currency_pair": currency_pair,
-            "volatility_7d": vol_7d,
-            "fx_drift": drift,
-            "fx_rate_mid": round(mid_rate, 4),
-            "confidence": round(random.uniform(0.85, 0.99), 3),
-            "source": "mock_oracle",
-        }
 
 
 class InventoryPressureGauge:
@@ -160,8 +129,8 @@ class TickPricingEngine:
     PRESSURE_WEIGHT: float = 0.45     # 库容压力对定价的影响权重
     BASE_SCORE: float = 100.0         # 基准评分
 
-    def __init__(self) -> None:
-        self._vol_oracle = MarketVolatilityOracle()
+    def __init__(self, volatility_source: FxVolatilitySource | None = None) -> None:
+        self._vol_oracle: FxVolatilitySource = volatility_source or build_fx_volatility_source()
         self._pressure_gauge = InventoryPressureGauge()
 
     def compute_tick(
@@ -292,6 +261,7 @@ class TickPricingEngine:
         return {
             "trail_id": trail_id,
             "timestamp": ts,
+            "tick_score": tick_score,
             "base_price_rmb": base_price_rmb,
             "adjusted_price_rmb": adjusted_price_rmb,
             "base_price_source": base_price_source,
@@ -317,7 +287,7 @@ class TickPricingEngine:
         sign_payload = (
             f"{trail['trail_id']}|{trail['base_price_rmb']}|"
             f"{trail['adjusted_price_rmb']}|"
-            f"{trail.get('tick_score', '')}|{trail['timestamp']}"
+            f"{trail.get('tick_score', 0)}|{trail['timestamp']}"
         )
         expected = hashlib.sha256(sign_payload.encode("utf-8")).hexdigest()
         return expected == trail.get("signature", "")
