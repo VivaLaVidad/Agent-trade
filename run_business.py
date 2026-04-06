@@ -72,6 +72,7 @@ async def match_single(
             "status": "no_approval",
             "bundling": len(neg.get("bundling_suggestions", [])),
             "alternatives": len(neg.get("alternatives", [])),
+            "tiered_quotes": neg.get("tiered_quotes", []),
             "log": neg.get("negotiation_log", []),
         }
 
@@ -95,6 +96,7 @@ async def match_single(
         "routing_fee_usd": txn["routing_fee_usd"],
         "transaction_id": txn["transaction_id"],
         "signature": txn["signature"][:16] + "...",
+        "tiered_quotes": neg.get("tiered_quotes", []),
         "log": neg.get("negotiation_log", []),
     }
 
@@ -162,8 +164,15 @@ async def main() -> None:
             print(f"  #{i} [{merchant}] {status}  "
                   f"拼单={result.get('bundling',0)} 替代={result.get('alternatives',0)}")
 
+        # 展示阶梯报价
+        for tq in result.get("tiered_quotes", [])[:1]:
+            for tier in tq.get("tiers", []):
+                from modules.supply_chain.tiered_quote import TieredQuoteEngine
+                print(f"      [阶梯] {TieredQuoteEngine.format_tier_display(tier)}")
+
         for line in result.get("log", [])[:2]:
-            print(f"      {line}")
+            if "[TIER]" not in line:  # 阶梯报价已单独展示
+                print(f"      {line}")
         print()
 
     print("=" * 70)

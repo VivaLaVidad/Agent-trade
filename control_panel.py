@@ -388,13 +388,32 @@ class ControlPanel(QMainWindow):
                         "success")
 
         from modules.supply_chain.negotiator import NegotiatorAgent
-        self._emit("谈判引擎", "启动决策树", "MOQ/认证/预算/贸易术语", "running")
+        self._emit("谈判引擎", "启动决策树", "MOQ/认证/预算/贸易术语 + 阶梯报价", "running")
         negotiator = NegotiatorAgent()
         neg_result = await negotiator.execute(None, demand, candidates)
 
         for line in neg_result.get("negotiation_log", [])[:5]:
-            tag = "success" if "[OK]" in line else "running" if "[MOQ]" in line else "failed"
+            if "[TIER]" in line:
+                tag = "fee"
+            elif "[OK]" in line:
+                tag = "success"
+            elif "[MOQ]" in line:
+                tag = "running"
+            else:
+                tag = "failed"
             self._emit("谈判", "决策", line, tag)
+
+        # ── 展示阶梯报价看板 ──
+        tiered_quotes = neg_result.get("tiered_quotes", [])
+        for tq in tiered_quotes[:2]:
+            for tier in tq.get("tiers", []):
+                from modules.supply_chain.tiered_quote import TieredQuoteEngine
+                self._emit(
+                    "阶梯报价",
+                    f"Option {tier.get('option', '?')}",
+                    TieredQuoteEngine.format_tier_display(tier),
+                    "fee",
+                )
 
         best = neg_result.get("best_match")
         if best and best.get("status") == "approved":

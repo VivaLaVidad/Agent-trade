@@ -1,12 +1,13 @@
 """
-modules.supply_chain.negotiator — 贸易谈判决策智能体
-──────────────────────────────────────────────────────
+modules.supply_chain.negotiator — 贸易谈判决策智能体（含阶梯报价）
+──────────────────────────────────────────────────────────────────
 职责：
   1. MOQ 校验：数量不足 → 拼单建议 (SuggestBundling)
   2. 认证校验：资质不符 → 推荐平替 (RecommendAlternative)
   3. 预算校验：超预算 → 替代方案 / 部分履约
   4. 贸易术语选择：基于目的地自动推荐 FOB / CIF
-  5. 输出最终谈判结果 + 备选方案列表
+  5. 阶梯报价生成：为 approved 候选生成 Option A/B/C 多档报价
+  6. 输出最终谈判结果 + 阶梯报价看板 + 备选方案列表
 """
 
 from __future__ import annotations
@@ -14,20 +15,23 @@ from __future__ import annotations
 from typing import Any
 
 from modules.supply_chain.fx_service import FxRateService
+from modules.supply_chain.tiered_quote import TieredQuoteEngine
 from core.logger import get_logger
 
 logger = get_logger(__name__)
 
 
 class NegotiatorAgent:
-    """贸易条款谈判决策引擎
+    """贸易条款谈判决策引擎（含阶梯报价）
 
-    实现完整的决策树：MOQ → 认证 → 预算 → 贸易术语
+    实现完整的决策树：MOQ → 认证 → 预算 → 贸易术语 → 阶梯报价
     每个失败分支都有回退策略（拼单/平替/部分履约）。
+    通过的候选自动生成 3 档阶梯报价看板。
     """
 
     def __init__(self) -> None:
         self._fx = FxRateService()
+        self._tiered = TieredQuoteEngine()
 
     async def execute(
         self,
@@ -35,15 +39,17 @@ class NegotiatorAgent:
         demand: dict[str, Any],
         candidates: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        """对每个候选 SKU 执行谈判决策树
+        """对每个候选 SKU 执行谈判决策树 + 阶梯报价
 
         Returns
         -------
         dict
             {
               "best_match": dict | None,
+              "all_approved": list[dict],
               "alternatives": list[dict],
               "bundling_suggestions": list[dict],
+              "tiered_quotes": list[dict],
               "negotiation_log": list[str],
             }
         """
@@ -71,15 +77,32 @@ class NegotiatorAgent:
 
         best = approved[0] if approved else (alternatives[0] if alternatives else None)
 
+        # ── 为通过的候选生成阶梯报价看板 ──
+        tiered_quotes: list[dict[str, Any]] = []
+        quote_candidates = approved if approved else alternatives[:2]
+        if quote_candidates:
+            # 从原始 candidates 中找到对应的完整数据
+            approved_ids = {r.get("sku_id") for r in quote_candidates}
+            full_candidates = [c for c in candidates if c.get("sku_id") in approved_ids]
+            tiered_quotes = self._tiered.generate_multi_candidate_tiers(
+                full_candidates, demand, top_n=3,
+            )
+            for tq in tiered_quotes:
+                for tier in tq.get("tiers", []):
+                    log.append(
+                        f"[TIER] {TieredQuoteEngine.format_tier_display(tier)}"
+                    )
+
         logger.info(
-            "谈判完成: approved=%d alternatives=%d bundling=%d",
-            len(approved), len(alternatives), len(bundling),
+            "谈判完成: approved=%d alternatives=%d bundling=%d tiered=%d",
+            len(approved), len(alternatives), len(bundling), len(tiered_quotes),
         )
         return {
             "best_match": best,
             "all_approved": approved,
             "alternatives": alternatives,
             "bundling_suggestions": bundling,
+            "tiered_quotes": tiered_quotes,
             "negotiation_log": log,
         }
 

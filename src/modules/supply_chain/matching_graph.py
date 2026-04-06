@@ -5,10 +5,13 @@ modules.supply_chain.matching_graph — LangGraph 全球工业品撮合工作流
   START → demand_node（C端需求解析）
         → supply_node（B端供应链检索 / RAG）
         → risk_defense_node（价格波动熔断 + 库存 Agent，见 agents.agent_workflow）
-        → negotiate_node（贸易谈判决策树）
-        → [approved?]
-            ├─ Yes → po_gen_node（生成采购订单）→ END
-            └─ No  → END（返回替代方案）
+        → negotiate_node（贸易谈判决策树 + 阶梯报价）
+        → tiered_quote_node（阶梯报价看板生成 + 谈判状态初始化）
+        → [has_tiered_quotes?]
+            ├─ Yes → [buyer_accepts?]
+            │          ├─ Yes → po_gen_node（生成采购订单）→ END
+            │          └─ No  → END（返回阶梯报价看板，等待买家选择）
+            └─ No  → END（返回替代/拼单方案）
 """
 
 from __future__ import annotations
@@ -37,6 +40,10 @@ class MatchState(TypedDict, total=False):
     candidates: list[dict[str, Any]]
     risk_alerts: list[str]
     negotiation_result: dict[str, Any]
+    tiered_quotes: list[dict[str, Any]]
+    negotiation_status: str          # pending / counter_offer / accepted / rejected
+    negotiation_round: int           # 当前谈判轮次
+    buyer_selection: dict[str, Any]  # 买家选择的报价方案
     purchase_order: dict[str, Any]
     status: str
     error: str
@@ -116,7 +123,7 @@ def risk_defense_node(state: MatchState) -> dict[str, Any]:
 
 
 def negotiate_node(state: MatchState) -> dict[str, Any]:
-    """贸易谈判决策节点"""
+    """贸易谈判决策节点（含阶梯报价生成）"""
     import asyncio
     from modules.supply_chain.negotiator import NegotiatorAgent
 
@@ -137,7 +144,82 @@ def negotiate_node(state: MatchState) -> dict[str, Any]:
 
     return {
         "negotiation_result": result,
+        "tiered_quotes": result.get("tiered_quotes", []),
         "status": "approved" if has_approved else "no_approval",
+    }
+
+
+def tiered_quote_node(state: MatchState) -> dict[str, Any]:
+    """阶梯报价看板节点 + 谈判状态初始化
+
+    从 negotiation_result 中提取阶梯报价，初始化谈判状态机。
+    在自动模式下（无 buyer_selection），自动选择 Option A 继续。
+    在交互模式下，返回阶梯报价看板等待买家选择。
+    """
+    from modules.supply_chain.negotiation_state import NegotiationStateMachine
+
+    neg_result = state.get("negotiation_result", {})
+    tiered = state.get("tiered_quotes", [])
+    demand = state.get("structured_demand", {})
+    buyer_selection = state.get("buyer_selection")
+
+    if not tiered:
+        logger.info("无阶梯报价，跳过报价看板节点")
+        return {"negotiation_status": "no_quotes"}
+
+    # 初始化谈判状态机
+    best = neg_result.get("best_match", {})
+    nsm = NegotiationStateMachine(
+        match_id=best.get("sku_id", ""),
+        demand_id=demand.get("demand_id", ""),
+        merchant_id=demand.get("merchant_id", ""),
+        client_id=demand.get("client_id", ""),
+    )
+
+    # 卖家提交初始报价（Option A 的价格）
+    first_tier = tiered[0].get("tiers", [{}])[0] if tiered else {}
+    seller_offer = {
+        "unit_price_usd": first_tier.get("unit_price_usd", 0),
+        "quantity": first_tier.get("quantity", 0),
+        "shipping_term": first_tier.get("shipping_term", "FOB"),
+        "landed_usd": first_tier.get("landed_usd", 0),
+    }
+    nsm.submit_seller_offer(seller_offer)
+
+    # 自动模式：如果有 buyer_selection，处理买家选择
+    if buyer_selection:
+        selected_option = buyer_selection.get("option", "A")
+        action = buyer_selection.get("action", "accept")
+
+        if action == "accept":
+            nsm.submit_buyer_response("accept")
+            logger.info("买家接受报价: option=%s", selected_option)
+            return {
+                "negotiation_status": "accepted",
+                "negotiation_round": nsm.current_round,
+                "status": "approved",
+            }
+        elif action == "counter":
+            nsm.submit_buyer_response("counter", buyer_selection.get("counter_offer"))
+            return {
+                "negotiation_status": "counter_offer",
+                "negotiation_round": nsm.current_round,
+            }
+        else:
+            nsm.submit_buyer_response("reject")
+            return {
+                "negotiation_status": "rejected",
+                "negotiation_round": nsm.current_round,
+                "status": "no_approval",
+            }
+
+    # 无 buyer_selection → 自动接受 Option A（演示/自动化模式）
+    nsm.submit_buyer_response("accept")
+    logger.info("自动模式: 默认接受 Option A 报价")
+    return {
+        "negotiation_status": "accepted",
+        "negotiation_round": nsm.current_round,
+        "status": "approved",
     }
 
 
@@ -244,19 +326,35 @@ def _persist_po(po_data: dict, match_data: dict) -> None:
 
 
 def _route_after_negotiation(state: MatchState) -> str:
+    """谈判后路由：有阶梯报价 → 报价看板；否则直接结束"""
+    tiered = state.get("tiered_quotes", [])
+    if tiered:
+        return "tiered_quotes"
+    if state.get("status") == "approved":
+        return "generate_po"
+    return "finish"
+
+
+def _route_after_tiered(state: MatchState) -> str:
+    """阶梯报价后路由：accepted → 生成PO；其他 → 结束（等待买家选择）"""
     if state.get("status") == "approved":
         return "generate_po"
     return "finish"
 
 
 def build_matching_graph():
-    """构建撮合工作流 StateGraph"""
+    """构建撮合工作流 StateGraph
+
+    流程：
+      demand → supply → risk_defense → negotiate → tiered_quote → po_gen
+    """
     graph = StateGraph(MatchState)
 
     graph.add_node("demand_node", demand_node)
     graph.add_node("supply_node", supply_node)
     graph.add_node("risk_defense_node", risk_defense_node)
     graph.add_node("negotiate_node", negotiate_node)
+    graph.add_node("tiered_quote_node", tiered_quote_node)
     graph.add_node("po_gen_node", po_gen_node)
 
     graph.set_entry_point("demand_node")
@@ -278,6 +376,12 @@ def build_matching_graph():
     graph.add_conditional_edges(
         "negotiate_node",
         _route_after_negotiation,
+        {"tiered_quotes": "tiered_quote_node", "generate_po": "po_gen_node", "finish": END},
+    )
+
+    graph.add_conditional_edges(
+        "tiered_quote_node",
+        _route_after_tiered,
         {"generate_po": "po_gen_node", "finish": END},
     )
 

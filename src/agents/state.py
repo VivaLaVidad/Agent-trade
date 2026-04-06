@@ -36,12 +36,21 @@ class TradeState(TypedDict, total=False):
     is_valid_lead : bool
         意图解析节点判定的布尔值：
         True = 有效商业询盘，False = 垃圾邮件或无效内容
+    clarification_needed : bool
+        意图解析后是否需要向买家反问澄清（缺少关键字段时为 True）
+    clarification_questions : list[str]
+        待澄清问题列表（如 "请确认电压规格" / "是否需要 CE 认证"）
+    clarification_round : int
+        当前澄清轮次（防止无限循环，上限 3 轮）
     """
 
     raw_inquiry: str
     analyzed_intent: dict[str, Any]
     generated_response: str
     is_valid_lead: bool
+    clarification_needed: bool
+    clarification_questions: list[str]
+    clarification_round: int
 
 
 # ═════════════════════════════════════════════════════════════

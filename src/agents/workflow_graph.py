@@ -2,16 +2,21 @@
 agents.workflow_graph — LangGraph 外贸邮件处理工作流编排
 ─────────────────────────────────────────────────────────
 职责：
-  1. 使用 StateGraph 串联 意图解析 → 条件路由 → 回信生成 完整链路
-  2. 条件路由：有效询盘 → draft_node → END；垃圾邮件 → 直达 END
+  1. 使用 StateGraph 串联 意图解析 → 澄清反问 → 条件路由 → 回信生成 完整链路
+  2. 三路条件路由：
+     - 需要澄清 → clarifier_node → END（等待买家补充后重入）
+     - 有效询盘 → draft_node → END
+     - 垃圾邮件 → 直达 END
   3. MemorySaver 以 thread_id 区分不同客户邮件处理上下文
   4. 对外提供 WorkflowOrchestrator 统一调用入口（兼容 main.py）
 
 流程示意::
 
-    START → analyze_node → [is_valid_lead?]
-                              ├─ True  → draft_node → END
-                              └─ False ──────────────→ END
+    START → analyze_node → [clarification_needed?]
+                              ├─ True  → clarifier_node → END（等待买家补充）
+                              └─ False → [is_valid_lead?]
+                                           ├─ True  → draft_node → END
+                                           └─ False ──────────────→ END
 """
 
 from __future__ import annotations
@@ -23,6 +28,7 @@ from langgraph.graph import END, StateGraph
 
 from agents.b_strategy_agent import draft_node
 from agents.c_intent_agent import analyze_node
+from agents.intent_clarifier import clarifier_node
 from agents.state import TradeState
 from core.logger import get_logger
 
@@ -38,14 +44,18 @@ def _route_after_analysis(state: TradeState) -> str:
     Parameters
     ----------
     state : TradeState
-        当前工作流状态，需包含 ``is_valid_lead`` 字段
+        当前工作流状态
 
     Returns
     -------
     str
-        ``"valid_lead"`` — 有效询盘，进入回信生成节点
-        ``"junk_mail"`` — 垃圾邮件 / 无效线索，直接结束
+        ``"needs_clarification"`` — 关键字段缺失，进入澄清反问节点
+        ``"valid_lead"``         — 有效询盘，进入回信生成节点
+        ``"junk_mail"``          — 垃圾邮件 / 无效线索，直接结束
     """
+    if state.get("clarification_needed", False):
+        logger.info("[路由] 关键字段缺失 → 进入澄清反问节点")
+        return "needs_clarification"
     if state.get("is_valid_lead", False):
         logger.info("[路由] 有效询盘 → 进入回信生成节点")
         return "valid_lead"
@@ -59,6 +69,9 @@ def _route_after_analysis(state: TradeState) -> str:
 def build_trade_graph():
     """构建外贸邮件处理 StateGraph 并编译（附带 MemorySaver 检查点）
 
+    流程：
+      analyze_node → 三路路由 → clarifier_node / draft_node / END
+
     Returns
     -------
     CompiledStateGraph
@@ -67,6 +80,7 @@ def build_trade_graph():
     graph: StateGraph = StateGraph(TradeState)
 
     graph.add_node("analyze_node", analyze_node)
+    graph.add_node("clarifier_node", clarifier_node)
     graph.add_node("draft_node", draft_node)
 
     graph.set_entry_point("analyze_node")
@@ -74,9 +88,15 @@ def build_trade_graph():
     graph.add_conditional_edges(
         "analyze_node",
         _route_after_analysis,
-        {"valid_lead": "draft_node", "junk_mail": END},
+        {
+            "needs_clarification": "clarifier_node",
+            "valid_lead": "draft_node",
+            "junk_mail": END,
+        },
     )
 
+    # 澄清反问后结束本轮（等待买家补充信息后重新触发工作流）
+    graph.add_edge("clarifier_node", END)
     graph.add_edge("draft_node", END)
 
     memory: MemorySaver = MemorySaver()

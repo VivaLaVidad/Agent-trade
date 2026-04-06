@@ -185,3 +185,42 @@ class TransactionLedger(Base):
         String(20), default="settled", comment="settled/pending/reversed",
     )
     created_at: Mapped[datetime] = _ts_created()
+
+
+class NegotiationRound(Base):
+    """谈判轮次记录 —— 多轮报价/还价状态追踪"""
+    __tablename__ = "negotiation_rounds"
+    __table_args__ = (
+        Index("ix_neg_negotiation", "negotiation_id"),
+        Index("ix_neg_match", "match_id"),
+        Index("ix_neg_merchant", "merchant_id"),
+    )
+
+    id: Mapped[str] = _uuid_pk()
+    negotiation_id: Mapped[str] = mapped_column(
+        String(36), comment="谈判会话ID（同一撮合的多轮共享）",
+    )
+    match_id: Mapped[str] = mapped_column(String(36), default="", comment="关联撮合ID")
+    demand_id: Mapped[str] = mapped_column(String(36), default="", comment="关联需求ID")
+    merchant_id: Mapped[str] = mapped_column(String(36), default="", comment="商户ID")
+    client_id: Mapped[str] = mapped_column(String(36), default="", comment="C端客户ID")
+    round_number: Mapped[int] = mapped_column(Integer, default=1, comment="轮次序号")
+    status: Mapped[str] = mapped_column(
+        String(20), default="pending",
+        comment="pending/counter_offer/accepted/rejected/expired",
+    )
+    action: Mapped[str] = mapped_column(
+        String(30), default="",
+        comment="seller_quote/buyer_accept/buyer_counter/buyer_reject",
+    )
+    seller_offer: Mapped[Optional[dict]] = mapped_column(
+        JSON, default=None, comment="卖家报价 {unit_price_usd, quantity, shipping_term, ...}",
+    )
+    buyer_offer: Mapped[Optional[dict]] = mapped_column(
+        JSON, default=None, comment="买家还价 {unit_price_usd, quantity, ...}",
+    )
+    delta_highlight: Mapped[Optional[dict]] = mapped_column(
+        JSON, default=None,
+        comment="差值高亮 {old_price, new_price, delta_usd, delta_pct, direction}",
+    )
+    created_at: Mapped[datetime] = _ts_created()
