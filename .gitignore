@@ -1,0 +1,28 @@
+.env
+.env.local
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+# 本地 SQLite / 任务库 / WAL（勿提交；保留空目录）
+db/*
+!db/.gitkeep
+*.db
+*.db-shm
+*.db-wal
+*-journal
+!**/.gitkeep
+# 运行日志与本地许可证文件
+logs/*
+!logs/.gitkeep
+license.lic
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log

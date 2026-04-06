@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package rpa;
+
+service RPAService {
+  rpc ExecuteTask (TaskRequest) returns (TaskResponse);
+  rpc Ping (PingRequest) returns (PingResponse);
+}
+
+message TaskRequest {
+  string task_id    = 1;
+  string task_type  = 2;
+  string params_json = 3;
+}
+
+message TaskResponse {
+  bool   success     = 1;
+  string result_json = 2;
+  string error       = 3;
+}
+
+message PingRequest {}
+
+message PingResponse {
+  string status = 1;
+  double uptime_seconds = 2;
+}

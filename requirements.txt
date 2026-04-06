@@ -1,0 +1,54 @@
+# ═══════════════════════════════════════════════════
+#  TradeStealth_Core 依赖清单
+# ═══════════════════════════════════════════════════
+
+# --- Web Framework ---
+fastapi>=0.115.0
+uvicorn[standard]>=0.34.0
+pydantic>=2.10.0
+pydantic-settings>=2.7.0
+
+# --- LLM & Agent Framework ---
+langchain>=0.3.14
+langchain-openai>=0.3.0
+langchain-community>=0.3.14
+langchain-ollama>=1.0.0
+langgraph>=0.2.60
+
+# --- Database ---
+sqlalchemy[asyncio]>=2.0.36
+asyncpg>=0.30.0
+aiosqlite>=0.20.0
+alembic>=1.14.0
+pgvector>=0.3.6
+
+# --- Encryption & Security ---
+cryptography>=44.0.0
+
+# --- RPA / Browser Automation ---
+playwright>=1.49.0
+
+# --- gRPC (RPA Process Isolation) ---
+grpcio>=1.60.0
+grpcio-tools>=1.60.0
+
+# --- Resilience ---
+tenacity>=8.2.0
+
+# --- Monitoring ---
+psutil>=5.9.0
+
+# --- Desktop Control Panel ---
+PyQt6>=6.6.0
+
+# --- Utilities ---
+python-dotenv>=1.0.0
+httpx>=0.28.0
+orjson>=3.10.0
+
+# --- Embedding ---
+tiktoken>=0.8.0
+numpy>=1.26.0
+
+# --- Build (dev only) ---
+# pip install pyarmor

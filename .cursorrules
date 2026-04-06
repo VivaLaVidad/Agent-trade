@@ -1,0 +1,41 @@
+# ═══════════════════════════════════════════════════════════════════
+#  TradeStealth_Core — 暗箱开发守则 (Cursor Rules)
+# ═══════════════════════════════════════════════════════════════════
+
+## 🔒 安全红线 (Security Redlines)
+- 所有 API 仅绑定 127.0.0.1，禁止暴露到公网
+- 任何涉及客户数据的日志必须经过 `core.logger` 脱敏处理
+- 硬件机器码校验失败时，静默拒绝服务，不返回具体错误原因
+- AES-256-GCM 加密密钥仅从环境变量读取，禁止硬编码
+- 数据库连接串、API Key 等敏感信息一律走 `.env`，禁止提交到版本控制
+
+## 🏗️ 架构约定 (Architecture Conventions)
+- FastAPI 作为唯一网关层，所有业务逻辑封装在 agents/ 中
+- Agent 间通信通过 LangGraph StateGraph 编排，禁止直接互调
+- RPA 操作必须经过 rpa_engine/ 统一调度，不允许在 Agent 中直接操控浏览器
+- 数据库操作统一使用 SQLAlchemy 2.0 async 风格，禁止裸 SQL
+- 向量检索走 database/vector_store.py，统一 embedding 接口
+
+## 📐 编码规范 (Coding Standards)
+- Python 3.11+，严格 Type Hints
+- 异步优先：所有 I/O 操作使用 async/await
+- Pydantic v2 做数据校验，BaseSettings 管理配置
+- 函数单一职责，单个函数不超过 50 行
+- 异常处理：业务异常用自定义 Exception，系统异常统一兜底
+
+## 🧪 测试要求 (Testing)
+- 核心加解密模块必须有单元测试
+- Agent 决策链路需有 integration test
+- RPA 流程用 mock 替代真实浏览器操作
+
+## 📝 注释要求 (Documentation)
+- 模块级 docstring 说明职责边界
+- 复杂业务逻辑附带决策注释
+- 禁止无意义注释（如 "初始化变量"）
+
+## 🚫 禁止事项 (Forbidden)
+- 禁止使用 print() 输出调试信息，统一用 logger
+- 禁止在代码中出现任何真实客户数据
+- 禁止绕过 security.py 的鉴权逻辑
+- 禁止将 Playwright browser context 泄露到 RPA 引擎外部
+- 禁止在 Agent 中硬编码 prompt，统一走配置或知识库
