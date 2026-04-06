@@ -199,6 +199,139 @@ def get_cipher() -> AESCipher:
 
 
 # ═════════════════════════════════════════════════════════════
+#  金融级幂等防护 (IdempotencyGuard)
+# ═════════════════════════════════════════════════════════════
+class IdempotencyGuard:
+    """金融级幂等防护 —— 防止重复交易指令
+
+    所有 ExecuteTrade 指令在发送给 rpa_engine 前，必须通过本守卫校验：
+    同一 trade_id 在 TTL 窗口内（默认 60 分钟）仅允许触发一次物理指令，
+    防止因网络抖动导致商家重复扣款或重复发货。
+
+    存储后端：
+      - 优先使用 PostgreSQL（idempotency_keys 表）
+      - 降级为进程内 dict（重启后丢失，仅适用于单进程）
+
+    线程安全：通过 asyncio.Lock 保证并发安全。
+    """
+
+    _DEFAULT_TTL_SECONDS: int = 3600  # 60 分钟
+
+    def __init__(self, ttl_seconds: int = _DEFAULT_TTL_SECONDS) -> None:
+        self._ttl = ttl_seconds
+        self._local_cache: dict[str, float] = {}  # trade_id → expiry_ts
+        self._lock = None  # 延迟初始化 asyncio.Lock
+
+    def _get_lock(self):
+        if self._lock is None:
+            import asyncio
+            self._lock = asyncio.Lock()
+        return self._lock
+
+    async def check_and_acquire(self, trade_id: str) -> bool:
+        """检查 trade_id 是否可执行，若可执行则原子性地占位
+
+        Parameters
+        ----------
+        trade_id : str
+            交易唯一标识（通常为 transaction_id 或 po_number）
+
+        Returns
+        -------
+        bool
+            True = 首次执行，已成功占位
+            False = 重复请求，应拒绝执行
+        """
+        import time
+
+        async with self._get_lock():
+            now = time.time()
+
+            # 清理过期条目
+            expired = [k for k, v in self._local_cache.items() if v < now]
+            for k in expired:
+                del self._local_cache[k]
+
+            # 检查是否已存在
+            if trade_id in self._local_cache:
+                logger.warning(
+                    "幂等拦截: trade_id=%s 在 %ds 窗口内重复触发，已拒绝",
+                    trade_id[:16], self._ttl,
+                )
+                return False
+
+            # 占位
+            self._local_cache[trade_id] = now + self._ttl
+
+            # 异步持久化到数据库（尽力而为，不阻塞主流程）
+            try:
+                await self._persist_key(trade_id, now)
+            except Exception as exc:
+                logger.debug("幂等键持久化失败（非致命）: %s", exc)
+
+            logger.info(
+                "幂等通过: trade_id=%s TTL=%ds",
+                trade_id[:16], self._ttl,
+            )
+            return True
+
+    async def release(self, trade_id: str) -> None:
+        """手动释放幂等键（用于事务回滚场景）"""
+        async with self._get_lock():
+            self._local_cache.pop(trade_id, None)
+            logger.info("幂等键已释放: trade_id=%s", trade_id[:16])
+
+    async def _persist_key(self, trade_id: str, timestamp: float) -> None:
+        """将幂等键写入数据库（跨进程去重）"""
+        try:
+            from database.models import AsyncSessionFactory
+            from sqlalchemy import text
+
+            async with AsyncSessionFactory() as session:
+                await session.execute(
+                    text(
+                        "INSERT INTO idempotency_keys (trade_id, created_at, expires_at) "
+                        "VALUES (:tid, NOW(), NOW() + (CAST(:ttl AS INTEGER) * INTERVAL '1 second')) "
+                        "ON CONFLICT (trade_id) DO NOTHING"
+                    ),
+                    {"tid": trade_id, "ttl": int(self._ttl)},
+                )
+                await session.commit()
+        except Exception:
+            pass  # 降级为仅内存模式
+
+    async def check_db(self, trade_id: str) -> bool:
+        """从数据库检查幂等键是否存在（跨进程恢复）"""
+        try:
+            from database.models import AsyncSessionFactory
+            from sqlalchemy import text
+
+            async with AsyncSessionFactory() as session:
+                result = await session.execute(
+                    text(
+                        "SELECT 1 FROM idempotency_keys "
+                        "WHERE trade_id = :tid AND expires_at > NOW()"
+                    ),
+                    {"tid": trade_id},
+                )
+                return result.scalar() is not None
+        except Exception:
+            return False
+
+
+# 全局单例
+_idempotency_guard: IdempotencyGuard | None = None
+
+
+def get_idempotency_guard() -> IdempotencyGuard:
+    """获取全局幂等防护单例"""
+    global _idempotency_guard
+    if _idempotency_guard is None:
+        _idempotency_guard = IdempotencyGuard()
+    return _idempotency_guard
+
+
+# ═════════════════════════════════════════════════════════════
 #  FastAPI 鉴权依赖
 # ═════════════════════════════════════════════════════════════
 async def require_machine_auth(

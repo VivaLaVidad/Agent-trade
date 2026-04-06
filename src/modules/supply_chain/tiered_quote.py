@@ -19,6 +19,7 @@ import math
 from typing import Any
 
 from modules.supply_chain.fx_service import FxRateService
+from modules.supply_chain.tick_pricing import TickPricingEngine as _TickEngine
 from core.logger import get_logger
 
 logger = get_logger(__name__)
@@ -40,6 +41,7 @@ class TieredQuoteEngine:
 
     def __init__(self) -> None:
         self._fx = FxRateService()
+        self._tick = _TickEngine()
 
     def generate_tiers(
         self,
@@ -80,8 +82,17 @@ class TieredQuoteEngine:
             )
             tier_price_rmb = round(base_price_rmb * (1 - discount), 4)
 
+            # Tick-by-Tick 动态定价：基于汇率波动 + 库容压力调整
+            tick_result = self._tick.compute_tick(
+                base_price_rmb=tier_price_rmb,
+                stock_qty=int(candidate.get("stock_qty", 0)),
+                moq=int(candidate.get("moq", 100)),
+                demand_qty=tier_qty,
+            )
+            tick_adjusted_price = tick_result["adjusted_price_rmb"]
+
             landed = self._fx.calculate_landed_cost(
-                tier_price_rmb, tier_qty, destination, shipping_term,
+                tick_adjusted_price, tier_qty, destination, shipping_term,
             )
 
             unit_price_usd = round(
@@ -96,7 +107,7 @@ class TieredQuoteEngine:
                 "supplier_name": supplier_name,
                 "sku_id": candidate.get("sku_id", ""),
                 "quantity": tier_qty,
-                "unit_price_rmb": tier_price_rmb,
+                "unit_price_rmb": tick_adjusted_price,
                 "unit_price_usd": unit_price_usd,
                 "total_rmb": landed["total_rmb"],
                 "total_usd": landed["total_usd"],
@@ -108,6 +119,9 @@ class TieredQuoteEngine:
                 "prepay_pct": round(prepay_pct * 100, 1),
                 "prepay_usd": prepay_usd,
                 "balance_usd": round(landed["landed_usd"] - prepay_usd, 2),
+                "tick_score": tick_result["tick_score"],
+                "tick_adjustment_pct": tick_result["tick_adjustment_pct"],
+                "pricing_audit_trail": tick_result["pricing_audit_trail"],
             }
             tiers.append(tier)
 

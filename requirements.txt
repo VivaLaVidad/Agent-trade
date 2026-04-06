@@ -14,6 +14,7 @@ langchain-openai>=0.3.0
 langchain-community>=0.3.14
 langchain-ollama>=1.0.0
 langgraph>=0.2.60
+langgraph-checkpoint-postgres>=2.0.0
 
 # --- Database ---
 sqlalchemy[asyncio]>=2.0.36
@@ -21,6 +22,7 @@ asyncpg>=0.30.0
 aiosqlite>=0.20.0
 alembic>=1.14.0
 pgvector>=0.3.6
+psycopg[binary]>=3.1.0
 
 # --- Encryption & Security ---
 cryptography>=44.0.0

@@ -22,12 +22,12 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, TypedDict
 
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 
 from langchain_ollama import ChatOllama
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from database.pg_checkpointer import get_pg_checkpointer_sync
 from core.logger import get_logger
 
 logger = get_logger(__name__)
@@ -413,8 +413,8 @@ def build_matching_graph():
 
     graph.add_edge("po_gen_node", END)
 
-    memory = MemorySaver()
-    return graph.compile(checkpointer=memory)
+    checkpointer = get_pg_checkpointer_sync()
+    return graph.compile(checkpointer=checkpointer)
 
 
 class MatchingOrchestrator:

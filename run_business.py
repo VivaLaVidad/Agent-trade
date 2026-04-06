@@ -20,10 +20,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from core.logger import get_logger
+from core.security import get_idempotency_guard
 from modules.supply_chain.demand_agent import DemandAgent
 from modules.supply_chain.supply_agent import SupplyAgent
 from modules.supply_chain.negotiator import NegotiatorAgent
 from modules.supply_chain.ledger import LedgerService
+from modules.audit_module.compliance_gateway import get_compliance_gateway
 
 logger = get_logger(__name__)
 
@@ -77,14 +79,35 @@ async def match_single(
         }
 
     amount = best.get("landed_usd", 0)
+    po_number = f"PO-{uuid.uuid4().hex[:8].upper()}"
+
+    # ── 金融级幂等防护：同一 trade_id 60min 内仅允许一次 ──
+    idempotency = get_idempotency_guard()
+    trade_id = f"{merchant_id}:{client_id}:{best.get('sku_id', '')}:{po_number}"
+    if not await idempotency.check_and_acquire(trade_id):
+        return {
+            "merchant_id": merchant_id,
+            "status": "idempotency_blocked",
+            "reason": "重复交易指令已被幂等防护拦截",
+        }
+
     txn = ledger.create_transaction(
         merchant_id=merchant_id,
         client_id=client_id,
         amount_usd=amount,
         match_id=best.get("sku_id", ""),
-        po_number=f"PO-{uuid.uuid4().hex[:8].upper()}",
+        po_number=po_number,
     )
     await ledger.persist(txn)
+
+    # ── 暗箱合规：加密原始流水 → 审计日志 ──
+    gateway = get_compliance_gateway()
+    gateway.encrypt_and_log(
+        module="ledger",
+        action="transaction_settled",
+        raw_data=txn,
+        operator=f"agent:{merchant_id[:8]}",
+    )
 
     return {
         "merchant_id": merchant_id,

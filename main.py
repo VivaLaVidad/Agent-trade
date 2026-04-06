@@ -58,6 +58,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     heartbeat = HeartbeatMonitor()
     await heartbeat.start()
 
+    # 3.5 RPA Worker 容灾监控
+    from monitor.service_watchdog import ServiceWatchdog
+    watchdog = ServiceWatchdog()
+    await watchdog.start()
+    app.state.watchdog = watchdog
+
     # 4. AgentContext 组装 + 模块自动发现
     ctx = AgentContext.build(recovery=recovery, heartbeat=heartbeat)
     app.state.ctx = ctx
@@ -73,6 +79,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     yield
 
+    await watchdog.stop()
     await heartbeat.stop()
     await async_engine.dispose()
     logger.info("系统已关闭")

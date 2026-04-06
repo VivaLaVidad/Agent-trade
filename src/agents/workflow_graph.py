@@ -7,7 +7,7 @@ agents.workflow_graph — LangGraph 外贸邮件处理工作流编排
      - 需要澄清 → clarifier_node → END（等待买家补充后重入）
      - 有效询盘 → draft_node → END
      - 垃圾邮件 → 直达 END
-  3. MemorySaver 以 thread_id 区分不同客户邮件处理上下文
+  3. Checkpointer：优先 PostgreSQL（langgraph-checkpoint-postgres），失败则 MemorySaver
   4. 对外提供 WorkflowOrchestrator 统一调用入口（兼容 main.py）
 
 流程示意::
@@ -30,6 +30,7 @@ from agents.b_strategy_agent import draft_node
 from agents.c_intent_agent import analyze_node
 from agents.intent_clarifier import clarifier_node
 from agents.state import TradeState
+from database.pg_checkpointer import get_pg_checkpointer_sync
 from core.logger import get_logger
 
 logger = get_logger(__name__)
@@ -67,7 +68,7 @@ def _route_after_analysis(state: TradeState) -> str:
 #  图构建
 # ═════════════════════════════════════════════════════════════
 def build_trade_graph():
-    """构建外贸邮件处理 StateGraph 并编译（附带 MemorySaver 检查点）
+    """构建外贸邮件处理 StateGraph 并编译（附带 PG / Memory 检查点）
 
     流程：
       analyze_node → 三路路由 → clarifier_node / draft_node / END
@@ -99,8 +100,8 @@ def build_trade_graph():
     graph.add_edge("clarifier_node", END)
     graph.add_edge("draft_node", END)
 
-    memory: MemorySaver = MemorySaver()
-    return graph.compile(checkpointer=memory)
+    checkpointer = get_pg_checkpointer_sync()
+    return graph.compile(checkpointer=checkpointer)
 
 
 # ═════════════════════════════════════════════════════════════
@@ -109,7 +110,7 @@ def build_trade_graph():
 class WorkflowOrchestrator:
     """工作流编排器 —— main.py 的唯一调用入口
 
-    内部持有编译后的 LangGraph 图实例与 MemorySaver 检查点，
+    内部持有编译后的 LangGraph 图实例与可持久化 checkpointer（PG 或内存降级），
     以 ``session_id`` 作为 ``thread_id`` 区分不同客户的邮件上下文。
     """
 
