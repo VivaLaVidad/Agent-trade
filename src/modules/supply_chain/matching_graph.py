@@ -5,6 +5,7 @@ modules.supply_chain.matching_graph — LangGraph 全球工业品撮合工作流
   START → demand_node（C端需求解析）
         → reg_guard_node（出口管制 / 制裁黑名单）
         → supply_node（B端供应链检索 / RAG）
+        → [supply_scout_node?]（本地无候选时幽灵矿工动态寻价）
         → risk_defense_node（价格波动熔断 + 库存 Agent）
         → negotiate_node（谈判 + EpisodicMemory 画像 markup）
         → tiered_quote_node（阶梯报价看板 + 谈判状态）
@@ -15,6 +16,7 @@ modules.supply_chain.matching_graph — LangGraph 全球工业品撮合工作流
             └─ No  → END
 
   reg_guard 命中制裁 → END（REG_DENIED）
+  scout 仅降级消息 → END
 """
 
 from __future__ import annotations
@@ -43,6 +45,7 @@ class MatchState(TypedDict, total=False):
     candidates: list[dict[str, Any]]
     risk_alerts: list[str]
     reg_guard_result: dict[str, Any]  # RegGuard 出口管制检查结果
+    scout_result: dict[str, Any]     # SupplyChainScout 动态寻价结果
     negotiation_result: dict[str, Any]
     tiered_quotes: list[dict[str, Any]]
     negotiation_status: str          # pending / counter_offer / accepted / rejected
@@ -98,7 +101,7 @@ def supply_node(state: MatchState) -> dict[str, Any]:
         loop.close()
 
     if not candidates:
-        return {"candidates": [], "status": "no_candidates", "error": "未找到匹配供应商"}
+        return {"candidates": [], "status": "no_candidates_local", "error": "本地库未找到匹配供应商"}
 
     return {"candidates": candidates, "status": "candidates_found"}
 
@@ -438,11 +441,124 @@ def _docuforge_node(state: MatchState) -> dict[str, Any]:
         return {"invoice_result": {"status": "error", "error": str(exc)}}
 
 
+_STALE_DAYS = 7  # 底价数据过期天数
+_SCOUT_DEGRADATION_MSG = (
+    "该型号为特殊缺货件，我们的供应链专员正在全球询价，"
+    "预计 2 小时内给您准确报价"
+)
+
+
+def supply_scout_node(state: MatchState) -> dict[str, Any]:
+    """SupplyChainScout 节点: 本地库无结果或数据过期时，触发幽灵矿工动态寻价
+
+    触发条件:
+      - 本地 supply_node 返回 no_candidates_local
+      - 或候选数据过期超过 7 天 (TODO: 检查 created_at)
+
+    降级策略:
+      - 抓取被反爬拦截或超时 → 返回优雅降级消息
+      - 成功获取 → 转换为候选格式，合并到 candidates
+    """
+    import asyncio
+
+    candidates = state.get("candidates", [])
+    demand = state.get("structured_demand", {})
+    status = state.get("status", "")
+
+    # 仅在本地库无结果时触发
+    if status != "no_candidates_local" and candidates:
+        return {"scout_result": {"triggered": False, "reason": "local_data_sufficient"}}
+
+    category = demand.get("category", "")
+    product_kw = demand.get("product_keywords", demand.get("product", category))
+    query = f"{product_kw} {category}".strip()
+
+    if not query:
+        return {
+            "scout_result": {"triggered": True, "reason": "empty_query", "quotes": []},
+            "status": "no_candidates",
+            "error": "未找到匹配供应商（查询为空）",
+        }
+
+    logger.info("SupplyChainScout 触发: query=%s reason=%s", query[:40], status)
+
+    try:
+        from rpa_engine.supply_miner import get_supply_miner
+
+        miner = get_supply_miner()
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(miner.mine(query))
+        finally:
+            loop.close()
+
+        if result.error or not result.quotes:
+            # 抓取失败 → 优雅降级
+            logger.warning("SupplyChainScout 降级: error=%s", result.error or "no_quotes")
+            return {
+                "scout_result": {
+                    "triggered": True,
+                    "source": result.source,
+                    "error": result.error,
+                    "degradation_msg": _SCOUT_DEGRADATION_MSG,
+                },
+                "status": "scout_degraded",
+                "error": _SCOUT_DEGRADATION_MSG,
+            }
+
+        # 转换 SupplierQuote → 候选格式 (兼容 NegotiatorAgent)
+        new_candidates = []
+        for q in result.quotes:
+            new_candidates.append({
+                "sku_id": f"scout-{q.supplier_name[:8]}-{q.component_name[:12]}".replace(" ", "_"),
+                "sku_name": q.component_name,
+                "category": category,
+                "supplier_name": q.supplier_name,
+                "unit_price_rmb": q.unit_price_rmb,
+                "moq": q.moq,
+                "stock_qty": 10000 if q.stock_status == "in_stock" else 500 if q.stock_status == "low_stock" else 0,
+                "certifications": [],
+                "match_score": 70,
+                "specs": {},
+                "source": "ghost_miner",
+                "price_tiers": q.price_tiers,
+                "scraped_at": q.scraped_at,
+            })
+
+        logger.info(
+            "SupplyChainScout 成功: query=%s quotes=%d source=%s elapsed=%.2fs",
+            query[:40], len(new_candidates), result.source, result.elapsed_sec,
+        )
+
+        return {
+            "candidates": new_candidates,
+            "scout_result": {
+                "triggered": True,
+                "source": result.source,
+                "quotes_count": len(new_candidates),
+                "elapsed_sec": result.elapsed_sec,
+            },
+            "status": "candidates_found",
+        }
+
+    except Exception as exc:
+        logger.error("SupplyChainScout 异常: %s", exc)
+        return {
+            "scout_result": {
+                "triggered": True,
+                "error": str(exc),
+                "degradation_msg": _SCOUT_DEGRADATION_MSG,
+            },
+            "status": "scout_degraded",
+            "error": _SCOUT_DEGRADATION_MSG,
+        }
+
+
 def build_matching_graph():
     """构建撮合工作流 StateGraph
 
     流程：
-      demand → reg_guard → supply → risk_defense → negotiate → tiered_quote → po_gen → docuforge
+      demand → reg_guard → supply → [scout?] → risk_defense → negotiate → tiered_quote → po_gen → docuforge
     """
     from modules.compliance.export_control import reg_guard_node
 
@@ -451,6 +567,7 @@ def build_matching_graph():
     graph.add_node("demand_node", demand_node)
     graph.add_node("reg_guard_node", reg_guard_node)
     graph.add_node("supply_node", supply_node)
+    graph.add_node("supply_scout_node", supply_scout_node)
     graph.add_node("risk_defense_node", risk_defense_node)
     graph.add_node("negotiate_node", negotiate_node)
     graph.add_node("tiered_quote_node", tiered_quote_node)
@@ -473,8 +590,23 @@ def build_matching_graph():
         {"search": "supply_node", "finish": END},
     )
 
+    # supply → risk_defense (有候选) | scout (无候选) | END (降级失败)
+    def _route_after_supply(s: MatchState) -> str:
+        if s.get("status") == "candidates_found":
+            return "defend"
+        if s.get("status") == "no_candidates_local":
+            return "scout"
+        return "finish"
+
     graph.add_conditional_edges(
         "supply_node",
+        _route_after_supply,
+        {"defend": "risk_defense_node", "scout": "supply_scout_node", "finish": END},
+    )
+
+    # scout → risk_defense (成功) | END (降级)
+    graph.add_conditional_edges(
+        "supply_scout_node",
         lambda s: "defend" if s.get("status") == "candidates_found" else "finish",
         {"defend": "risk_defense_node", "finish": END},
     )
