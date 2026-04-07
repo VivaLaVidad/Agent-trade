@@ -11,7 +11,7 @@ modules.supply_chain.matching_graph — LangGraph 全球工业品撮合工作流
         → tiered_quote_node（阶梯报价看板 + 谈判状态）
         → [has_tiered_quotes?]
             ├─ Yes → [buyer_accepts?]
-            │          ├─ Yes → po_gen_node → docuforge_node（PI PDF + 哈希）→ END
+            │          ├─ Yes → po_gen_node → docuforge_node → procurement_node（Buy-side 锁单）→ END
             │          └─ No  → END
             └─ No  → END
 
@@ -53,6 +53,7 @@ class MatchState(TypedDict, total=False):
     buyer_selection: dict[str, Any]  # 买家选择的报价方案
     purchase_order: dict[str, Any]
     invoice_result: dict[str, Any]   # DocuForge 文档生成结果
+    procurement_result: dict[str, Any]  # Buy-side 采购对冲结果
     status: str
     error: str
 
@@ -554,11 +555,79 @@ def supply_scout_node(state: MatchState) -> dict[str, Any]:
         }
 
 
+def _procurement_node(state: MatchState) -> dict[str, Any]:
+    """Buy-side 采购对冲节点: PI 发出后静默启动上游锁单
+
+    在 docuforge_node 生成 PI 后自动触发。
+    调用 procurement_graph 子图执行:
+      ScoutNode → BiddingNode → ArbitrageEvaluator
+    """
+    neg = state.get("negotiation_result", {})
+    demand = state.get("structured_demand", {})
+    best = neg.get("best_match", {})
+    invoice = state.get("invoice_result", {})
+
+    # 仅在 PI 已生成且有成交时触发
+    if not best or invoice.get("status") != "generated":
+        return {"procurement_result": {"triggered": False, "reason": "no_pi_generated"}}
+
+    try:
+        from agents.procurement_graph import run_procurement_sync
+
+        target_sku = {
+            "ticker_id": best.get("ticker_id", ""),
+            "sku_name": best.get("sku_name", ""),
+            "category": demand.get("category", ""),
+        }
+        sell_price = best.get("landed_usd", 0)
+        qty = demand.get("quantity", 0)
+        shipping = best.get("shipping_usd", 0)
+
+        result = run_procurement_sync(
+            target_sku=target_sku,
+            required_qty=qty,
+            sell_price_usd=sell_price,
+            shipping_estimate_usd=shipping,
+        )
+
+        procurement_status = result.get("status", "unknown")
+        arb = result.get("arbitrage_result", {})
+        final_po = result.get("final_po", {})
+
+        logger.info(
+            "采购对冲: status=%s spread=$%.2f (%.1f%%)",
+            procurement_status,
+            arb.get("spread_usd", 0),
+            arb.get("spread_pct", 0),
+        )
+
+        return {
+            "procurement_result": {
+                "triggered": True,
+                "status": procurement_status,
+                "arbitrage_spread_usd": arb.get("spread_usd", 0),
+                "arbitrage_spread_pct": arb.get("spread_pct", 0),
+                "supplier_name": arb.get("supplier_name", ""),
+                "po_hash": final_po.get("po_hash", ""),
+                "po_number": final_po.get("po_number", ""),
+            },
+        }
+    except Exception as exc:
+        logger.error("采购对冲节点异常: %s", exc)
+        return {
+            "procurement_result": {
+                "triggered": True,
+                "status": "error",
+                "error": str(exc),
+            },
+        }
+
+
 def build_matching_graph():
     """构建撮合工作流 StateGraph
 
     流程：
-      demand → reg_guard → supply → [scout?] → risk_defense → negotiate → tiered_quote → po_gen → docuforge
+      demand → reg_guard → supply → [scout?] → risk_defense → negotiate → tiered_quote → po_gen → docuforge → procurement
     """
     from modules.compliance.export_control import reg_guard_node
 
@@ -573,6 +642,7 @@ def build_matching_graph():
     graph.add_node("tiered_quote_node", tiered_quote_node)
     graph.add_node("po_gen_node", po_gen_node)
     graph.add_node("docuforge_node", _docuforge_node)
+    graph.add_node("procurement_node", _procurement_node)
 
     graph.set_entry_point("demand_node")
 
@@ -627,7 +697,10 @@ def build_matching_graph():
 
     # po_gen → docuforge (自动生成 PI PDF)
     graph.add_edge("po_gen_node", "docuforge_node")
-    graph.add_edge("docuforge_node", END)
+
+    # docuforge → procurement (背靠背套利: 静默启动上游锁单)
+    graph.add_edge("docuforge_node", "procurement_node")
+    graph.add_edge("procurement_node", END)
 
     checkpointer = get_pg_checkpointer_sync()
     return graph.compile(checkpointer=checkpointer)

@@ -417,6 +417,7 @@ async def create_tables() -> None:
     # 侧效导入：将定义于独立模块的 ORM 注册进 Base.metadata（须早于 create_all）
     import core.long_term_memory  # noqa: F401 — opponent_profiles
     import modules.documents.invoice_generator  # noqa: F401 — document_hashes
+    import modules.supply_chain.models  # noqa: F401 — upstream_suppliers / procurement_orders 等
 
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

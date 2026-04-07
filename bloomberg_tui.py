@@ -208,6 +208,7 @@ class BloombergTUI(App):
         self._tick_count = 0
         self._reg_denied_count = 0
         self._docuforge_count = 0
+        self._hedge_count = 0
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -305,6 +306,18 @@ class BloombergTUI(App):
                 f"PO={po} hash={doc_hash}… "
                 f"[#4488ff]PDF generated ✓[/]"
             )
+        elif event.event_type == EventType.HEDGE_LOCKED:
+            spread = event.data.get("spread_usd", 0)
+            spread_pct = event.data.get("spread_pct", 0)
+            supplier = event.data.get("supplier", "?")
+            po = event.data.get("po_number", "?")
+            self._hedge_count += 1
+            audit_log.write(
+                f"[#8899aa]{ts}[/] [bold #39ff14][HEDGE-LOCKED][/] "
+                f"成功锁定上游货源 supplier={supplier[:20]} "
+                f"本单净套利: [bold #39ff14]${spread:.2f} ({spread_pct:.1f}%)[/] "
+                f"PO={po}"
+            )
         elif event.event_type == EventType.NEGOTIATION_UPDATE:
             action = event.data.get("action", "")
             if action == "REG_DENIED":
@@ -314,6 +327,18 @@ class BloombergTUI(App):
                     f"[#8899aa]{ts}[/] [bold #ff5555][REG-DENIED][/] "
                     f"ticker={event.ticker_id[:28]} dest={dest} "
                     f"[bold #ff5555]⛔ EXPORT CONTROL BLOCK[/]"
+                )
+            elif action == "HEDGE_LOCKED":
+                spread = event.data.get("spread_usd", 0)
+                spread_pct = event.data.get("spread_pct", 0)
+                supplier = event.data.get("supplier", "?")
+                po = event.data.get("po_number", "?")
+                self._hedge_count += 1
+                audit_log.write(
+                    f"[#8899aa]{ts}[/] [bold #39ff14][HEDGE-LOCKED][/] "
+                    f"成功锁定上游货源 supplier={supplier[:20]} "
+                    f"本单净套利: [bold #39ff14]${spread:.2f} ({spread_pct:.1f}%)[/] "
+                    f"PO={po}"
                 )
 
     def _tick_refresh(self) -> None:
@@ -430,13 +455,15 @@ class BloombergTUI(App):
         grpc_status = random.choice(["CONNECTED", "CONNECTED", "CONNECTED", "RECONNECTING"])
         grpc_color = "#00e5cc" if grpc_status == "CONNECTED" else "#ff9800"
         reg_color = "#ff5555" if self._reg_denied_count > 0 else "#00e5cc"
+        hedge_color = "#39ff14" if self._hedge_count > 0 else "#8899aa"
         health_log.write(
             f"[#667788]{ts}[/] "
             f"gRPC=[{grpc_color}]{grpc_status}[/] "
             f"PG_pool=[#00e5cc]active[/] "
             f"PG_wait_queue=[#8899aa]{random.randint(0, 3)}[/] "
             f"RegGuard=[{reg_color}]{self._reg_denied_count} denied[/] "
-            f"DocuForge=[#4488ff]{self._docuforge_count} docs[/]"
+            f"DocuForge=[#4488ff]{self._docuforge_count} docs[/] "
+            f"Hedge=[{hedge_color}]{self._hedge_count} locked[/]"
         )
 
     def action_toggle_dark(self) -> None:

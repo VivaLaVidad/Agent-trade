@@ -264,6 +264,7 @@ class EventType(str, Enum):
     NEGOTIATION_UPDATE = "negotiation_update"
     REG_DENIED = "reg_denied"
     DOCUMENT_GENERATED = "document_generated"
+    HEDGE_LOCKED = "hedge_locked"
 
 
 @dataclass
