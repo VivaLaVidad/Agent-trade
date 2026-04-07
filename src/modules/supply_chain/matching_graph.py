@@ -51,6 +51,7 @@ class MatchState(TypedDict, total=False):
     negotiation_status: str          # pending / counter_offer / accepted / rejected
     negotiation_round: int           # 当前谈判轮次
     buyer_selection: dict[str, Any]  # 买家选择的报价方案
+    soft_lock_result: dict[str, Any]  # 上游软锁定结果 (Two-Phase Commit Phase 1)
     purchase_order: dict[str, Any]
     invoice_result: dict[str, Any]   # DocuForge 文档生成结果
     sell_side_transaction_id: str     # Sell-side 交易 ID (用于背靠背对应)
@@ -275,11 +276,13 @@ def po_gen_node(state: MatchState) -> dict[str, Any]:
     if not best:
         return {"purchase_order": {}, "status": "no_po"}
 
+    sell_side_transaction_id = str(uuid.uuid4())
     po_number = f"PO-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}"
 
     offer_note = (best.get("offer_disclaimer") or "").strip()
     po_data = {
         "po_number": po_number,
+        "transaction_id": sell_side_transaction_id,
         "sku_name": best.get("sku_name", ""),
         "supplier_name": best.get("supplier_name", ""),
         "quantity": demand.get("quantity", 0),
@@ -311,19 +314,28 @@ def po_gen_node(state: MatchState) -> dict[str, Any]:
         logger.error("PO 文本生成失败: %s", exc)
         po_data["content"] = f"[Auto-generated PO]\n{json.dumps(po_data, indent=2)}"
 
-    _persist_po(po_data, best)
+    _persist_po(po_data, best, demand)
 
-    return {"purchase_order": po_data, "status": "po_generated"}
+    return {
+        "purchase_order": po_data,
+        "sell_side_transaction_id": sell_side_transaction_id,
+        "status": "po_generated",
+    }
 
 
-def _persist_po(po_data: dict, match_data: dict) -> None:
-    """持久化采购订单（同步写入）"""
+def _persist_po(po_data: dict, match_data: dict, demand: dict[str, Any]) -> None:
+    """持久化采购订单与 Sell-side 流水（同步写入）
+
+    PO / MatchResult 与 TransactionLedger 使用同一 ``po_data["transaction_id"]``，
+    供 DocuForge 与 procurement 背靠背强关联。
+    """
     try:
         import asyncio
         from database.models import AsyncSessionFactory
         from modules.supply_chain.models import PurchaseOrder, MatchResult
 
-        async def _save():
+        async def _save_and_ledger() -> None:
+            match_id_str: str
             async with AsyncSessionFactory() as session:
                 match_record = MatchResult(
                     demand_id=match_data.get("demand_id", str(uuid.uuid4())),
@@ -350,10 +362,42 @@ def _persist_po(po_data: dict, match_data: dict) -> None:
                 )
                 session.add(po)
                 await session.commit()
+                match_id_str = str(match_record.id)
+
+            txn = (po_data.get("transaction_id") or "").strip()
+            if not txn:
+                return
+            try:
+                from modules.supply_chain.ledger import LedgerService
+
+                merchant = (
+                    demand.get("merchant_id")
+                    or match_data.get("merchant_id")
+                    or "default"
+                )
+                merchant_id = str(merchant)[:36]
+                client_id = str(demand.get("client_id") or "")[:36]
+                ledger = LedgerService()
+                record = ledger.create_transaction(
+                    merchant_id=merchant_id,
+                    client_id=client_id,
+                    amount_usd=float(po_data.get("total_usd") or 0),
+                    match_id=match_id_str,
+                    po_number=str(po_data.get("po_number") or ""),
+                    ticker_id=str(match_data.get("ticker_id") or ""),
+                    transaction_id=txn,
+                )
+                await ledger.persist(record)
+            except Exception as lex:
+                logger.error(
+                    "Sell-side 交易流水入库失败（PO 已提交）txn=%s: %s",
+                    txn[:8] if len(txn) >= 8 else txn,
+                    lex,
+                )
 
         loop = asyncio.new_event_loop()
         try:
-            loop.run_until_complete(_save())
+            loop.run_until_complete(_save_and_ledger())
         finally:
             loop.close()
     except Exception as exc:
@@ -414,7 +458,7 @@ def _docuforge_node(state: MatchState) -> dict[str, Any]:
             "buyer_name": demand.get("buyer_name", ""),
             "destination": demand.get("destination", ""),
             "client_id": demand.get("client_id", ""),
-            "transaction_id": po.get("po_number", ""),
+            "transaction_id": po.get("transaction_id") or po.get("po_number", ""),
             "offer_disclaimer": best.get("offer_disclaimer", ""),
         }
 
@@ -556,10 +600,108 @@ def supply_scout_node(state: MatchState) -> dict[str, Any]:
         }
 
 
-def _procurement_node(state: MatchState) -> dict[str, Any]:
-    """Buy-side 采购对冲节点: PI 发出后静默启动上游锁单 (强一致性版本)
+# ═══════════════════════════════════════════════════════════════
+#  Margin Override Registry (Task 2 — Bloomberg OVRD command)
+# ═══════════════════════════════════════════════════════════════
 
-    在 docuforge_node 生成 PI 后自动触发。
+_margin_overrides: dict[str, float] = {}
+
+
+def _upstream_soft_lock_node(state: MatchState) -> dict[str, Any]:
+    """Two-Phase Commit Phase 1: 上游软锁定节点
+
+    在 negotiate_node 之后、tiered_quote_node 之前执行。
+    调用 procurement_graph.run_procurement_sync() 进行预询价，
+    获取上游 24h 价格锁定 (soft lock)。
+
+    - status=hedge_locked → 继续流转到 tiered_quote
+    - 其他 → END with error "upstream_lock_failed"
+    """
+    from agents.procurement_graph import run_procurement_sync
+
+    neg = state.get("negotiation_result", {})
+    demand = state.get("structured_demand", {})
+    best = neg.get("best_match", {})
+
+    if not best:
+        return {
+            "soft_lock_result": {"status": "skipped", "reason": "no_best_match"},
+            "status": "upstream_lock_failed",
+            "error": "upstream_lock_failed",
+        }
+
+    target_sku = {
+        "ticker_id": best.get("ticker_id", ""),
+        "sku_name": best.get("sku_name", ""),
+        "category": demand.get("category", ""),
+    }
+    sell_price = best.get("landed_usd", 0)
+    qty = demand.get("quantity", 0)
+    shipping = best.get("shipping_usd", 0)
+
+    # Generate a pre-inquiry trade ID for the soft lock phase
+    soft_lock_trade_id = f"SOFT-{uuid.uuid4().hex[:12].upper()}"
+
+    try:
+        result = run_procurement_sync(
+            target_sku=target_sku,
+            required_qty=qty,
+            sell_price_usd=sell_price,
+            shipping_estimate_usd=shipping,
+            matched_trade_id=soft_lock_trade_id,
+        )
+
+        procurement_status = result.get("status", "unknown")
+        arb = result.get("arbitrage_result", {})
+
+        logger.info(
+            "UpstreamSoftLock: status=%s spread=$%.2f (%.1f%%)",
+            procurement_status,
+            arb.get("spread_usd", 0),
+            arb.get("spread_pct", 0),
+        )
+
+        if procurement_status == "hedge_locked":
+            return {
+                "soft_lock_result": {
+                    "status": "hedge_locked",
+                    "soft_lock_trade_id": soft_lock_trade_id,
+                    "spread_usd": arb.get("spread_usd", 0),
+                    "spread_pct": arb.get("spread_pct", 0),
+                    "supplier_name": arb.get("supplier_name", ""),
+                },
+            }
+
+        return {
+            "soft_lock_result": {
+                "status": procurement_status,
+                "error": result.get("error", "upstream_lock_failed"),
+            },
+            "status": "upstream_lock_failed",
+            "error": "upstream_lock_failed",
+        }
+
+    except Exception as exc:
+        logger.error("UpstreamSoftLock 异常: %s", exc)
+        return {
+            "soft_lock_result": {"status": "error", "error": str(exc)},
+            "status": "upstream_lock_failed",
+            "error": "upstream_lock_failed",
+        }
+
+
+def _route_after_soft_lock(state: MatchState) -> str:
+    """软锁定后路由: hedge_locked → 继续; 其他 → END"""
+    sl = state.get("soft_lock_result", {})
+    if sl.get("status") == "hedge_locked":
+        return "continue"
+    return "finish"
+
+
+def _procurement_node(state: MatchState) -> dict[str, Any]:
+    """Buy-side 采购对冲节点: Hard Commit — 确认已软锁定的上游订单
+
+    Two-Phase Commit Phase 2: docuforge 生成 PI 后执行最终确认。
     强一致性约束:
       - 必须从 MatchState 提取 sell_side_transaction_id
       - 缺失则抛出 TransactionContextMissing
@@ -684,10 +826,12 @@ def _procurement_node(state: MatchState) -> dict[str, Any]:
 
 
 def build_matching_graph():
-    """构建撮合工作流 StateGraph
+    """构建撮合工作流 StateGraph (Two-Phase Commit)
 
     流程：
-      demand → reg_guard → supply → [scout?] → risk_defense → negotiate → tiered_quote → po_gen → docuforge → procurement
+      demand → reg_guard → supply → [scout?] → risk_defense
+        → negotiate → soft_lock → tiered_quote → po_gen
+        → docuforge → procurement(hard commit) → END
     """
     from modules.compliance.export_control import reg_guard_node
 
@@ -699,6 +843,7 @@ def build_matching_graph():
     graph.add_node("supply_scout_node", supply_scout_node)
     graph.add_node("risk_defense_node", risk_defense_node)
     graph.add_node("negotiate_node", negotiate_node)
+    graph.add_node("soft_lock_node", _upstream_soft_lock_node)
     graph.add_node("tiered_quote_node", tiered_quote_node)
     graph.add_node("po_gen_node", po_gen_node)
     graph.add_node("docuforge_node", _docuforge_node)
@@ -743,10 +888,18 @@ def build_matching_graph():
 
     graph.add_edge("risk_defense_node", "negotiate_node")
 
+    # negotiate → soft_lock (Two-Phase Commit Phase 1)
     graph.add_conditional_edges(
         "negotiate_node",
         _route_after_negotiation,
-        {"tiered_quotes": "tiered_quote_node", "generate_po": "po_gen_node", "finish": END},
+        {"tiered_quotes": "soft_lock_node", "generate_po": "soft_lock_node", "finish": END},
+    )
+
+    # soft_lock → tiered_quote (locked) | END (lock failed)
+    graph.add_conditional_edges(
+        "soft_lock_node",
+        _route_after_soft_lock,
+        {"continue": "tiered_quote_node", "finish": END},
     )
 
     graph.add_conditional_edges(
@@ -758,7 +911,7 @@ def build_matching_graph():
     # po_gen → docuforge (自动生成 PI PDF)
     graph.add_edge("po_gen_node", "docuforge_node")
 
-    # docuforge → procurement (背靠背套利: 静默启动上游锁单)
+    # docuforge → procurement (Two-Phase Commit Phase 2: hard commit confirmation)
     graph.add_edge("docuforge_node", "procurement_node")
     graph.add_edge("procurement_node", END)
 

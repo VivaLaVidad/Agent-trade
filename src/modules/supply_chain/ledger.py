@@ -54,6 +54,7 @@ class LedgerService:
         match_id: str = "",
         po_number: str = "",
         ticker_id: str = "",
+        transaction_id: str | None = None,
     ) -> dict[str, Any]:
         """生成一条交易流水并签名
 
@@ -71,13 +72,21 @@ class LedgerService:
             关联的采购订单编号
         ticker_id : str
             标准化 Ticker ID (如 CLAW-ELEC-CAP-100NF50V)
+        transaction_id : str | None
+            若提供合法 UUID，则作为流水号（与撮合图 state 强一致）；否则自动生成
 
         Returns
         -------
         dict
             完整的流水记录（含签名），可直接写入数据库
         """
-        txn_id = str(uuid.uuid4())
+        if transaction_id and (tid := transaction_id.strip()):
+            try:
+                txn_id = str(uuid.UUID(tid))
+            except ValueError:
+                txn_id = str(uuid.uuid4())
+        else:
+            txn_id = str(uuid.uuid4())
         fee = round(amount_usd * self._fee_rate, 2)
         ts = datetime.now(timezone.utc).isoformat()
 

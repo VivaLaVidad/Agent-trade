@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import os
 import random
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -32,7 +33,7 @@ load_dotenv()
 
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Header, Footer, Static, DataTable, RichLog, Label
+from textual.widgets import Header, Footer, Static, DataTable, RichLog, Label, Input
 from textual.timer import Timer
 from textual import work
 
@@ -132,6 +133,90 @@ class SystemHealthPanel(Static):
 
 
 # ═══════════════════════════════════════════════════════════════
+#  Bloomberg Command Parser + InputBar (Task 2)
+# ═══════════════════════════════════════════════════════════════
+
+# Margin overrides registry — shared with matching_graph._margin_overrides
+_margin_overrides: dict[str, float] = {}
+
+
+def parse_bloomberg_command(raw: str) -> dict[str, Any]:
+    """Parse Bloomberg-style terminal commands.
+
+    Supported commands:
+      OVRD -id <trade_id> --force_margin <float>
+      RESUME -id <trade_id>
+      KILL -id <trade_id>
+
+    Returns dict with 'command', 'trade_id', and command-specific params.
+    Returns {'command': 'unknown'} on parse failure.
+    """
+    raw = raw.strip()
+    if not raw:
+        return {"command": "unknown", "error": "empty input"}
+
+    parts = raw.split()
+    cmd = parts[0].upper()
+
+    if cmd not in ("OVRD", "RESUME", "KILL"):
+        return {"command": "unknown", "error": f"unrecognized command: {cmd}"}
+
+    result: dict[str, Any] = {"command": cmd}
+
+    # Extract -id <trade_id>
+    for i, p in enumerate(parts):
+        if p == "-id" and i + 1 < len(parts):
+            result["trade_id"] = parts[i + 1]
+            break
+
+    if "trade_id" not in result:
+        return {"command": "unknown", "error": "missing -id parameter"}
+
+    # Extract --force_margin <float> for OVRD
+    if cmd == "OVRD":
+        for i, p in enumerate(parts):
+            if p == "--force_margin" and i + 1 < len(parts):
+                try:
+                    result["force_margin"] = float(parts[i + 1])
+                except ValueError:
+                    return {"command": "unknown", "error": f"invalid margin value: {parts[i + 1]}"}
+                break
+
+    return result
+
+
+class InputBar(Static):
+    """Bloomberg-style command input bar at the bottom of the TUI."""
+
+    DEFAULT_CSS = """
+    InputBar {
+        dock: bottom;
+        height: 3;
+        background: #0d1520;
+        border-top: solid #1a3d5c;
+    }
+    InputBar Input {
+        width: 1fr;
+        background: #0a0e14;
+        color: #00e5cc;
+        border: none;
+    }
+    InputBar Label {
+        width: auto;
+        color: #ff9800;
+        padding: 0 1;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        yield Label("[bold #ff9800]CMD>[/]")
+        yield Input(
+            placeholder="OVRD -id <trade_id> --force_margin 4.0 | RESUME -id <id> | KILL -id <id>",
+            id="cmd-input",
+        )
+
+
+# ═══════════════════════════════════════════════════════════════
 #  Bloomberg TUI App
 # ═══════════════════════════════════════════════════════════════
 
@@ -209,6 +294,7 @@ class BloombergTUI(App):
         self._reg_denied_count = 0
         self._docuforge_count = 0
         self._hedge_count = 0
+        self._margin_overrides: dict[str, float] = _margin_overrides
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -219,6 +305,7 @@ class BloombergTUI(App):
             with Horizontal(id="bottom-row"):
                 yield AuditTrailPanel()
                 yield SystemHealthPanel()
+        yield InputBar()
         yield Footer()
 
     async def on_mount(self) -> None:
@@ -318,6 +405,10 @@ class BloombergTUI(App):
                 f"本单净套利: [bold #39ff14]${spread:.2f} ({spread_pct:.1f}%)[/] "
                 f"PO={po}"
             )
+        elif event.event_type == EventType.PENDING_REVIEW:
+            trade_id = event.data.get("trade_id", "?")
+            spread_pct = float(event.data.get("spread_pct", 0))
+            self.log_pending_review(str(trade_id), spread_pct)
         elif event.event_type == EventType.NEGOTIATION_UPDATE:
             action = event.data.get("action", "")
             if action == "REG_DENIED":
@@ -498,6 +589,86 @@ class BloombergTUI(App):
         audit_log.write(
             f"[bold #ff5555]>>> MANUAL SPIKE INJECTION: {target} <<<[/]"
         )
+
+    async def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Handle Bloomberg-style command input from the InputBar."""
+        if event.input.id != "cmd-input":
+            return
+
+        raw = event.value.strip()
+        event.input.value = ""
+
+        if not raw:
+            return
+
+        audit_log = self.query_one("#audit-log", RichLog)
+        ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
+
+        parsed = parse_bloomberg_command(raw)
+
+        if parsed.get("command") == "unknown":
+            audit_log.write(
+                f"[#8899aa]{ts}[/] [bold #ff5555][CMD-ERROR][/] "
+                f"{parsed.get('error', 'unknown command')}"
+            )
+            return
+
+        cmd = parsed["command"]
+        trade_id = parsed.get("trade_id", "?")
+
+        if cmd == "OVRD":
+            margin = parsed.get("force_margin")
+            if margin is not None:
+                self._margin_overrides[trade_id] = margin
+                # Also sync to matching_graph's module-level overrides
+                try:
+                    from modules.supply_chain.matching_graph import _margin_overrides as mg_overrides
+                    mg_overrides[trade_id] = margin
+                except ImportError:
+                    pass
+                audit_log.write(
+                    f"[#8899aa]{ts}[/] [bold #ff9800][OVRD][/] "
+                    f"trade={trade_id} force_margin={margin:.1f}% "
+                    f"[bold #ff9800]override applied ✓[/]"
+                )
+            else:
+                audit_log.write(
+                    f"[#8899aa]{ts}[/] [bold #ff5555][OVRD-ERROR][/] "
+                    f"missing --force_margin for trade={trade_id}"
+                )
+
+        elif cmd == "RESUME":
+            audit_log.write(
+                f"[#8899aa]{ts}[/] [bold #00e5cc][RESUME][/] "
+                f"trade={trade_id} [#00e5cc]workflow resumed ✓[/]"
+            )
+
+        elif cmd == "KILL":
+            # Remove any override for this trade (TUI + matching_graph 单一真源)
+            self._margin_overrides.pop(trade_id, None)
+            try:
+                from modules.supply_chain.matching_graph import _margin_overrides as mg_overrides
+
+                mg_overrides.pop(trade_id, None)
+            except ImportError:
+                pass
+            audit_log.write(
+                f"[#8899aa]{ts}[/] [bold #ff5555][KILL][/] "
+                f"trade={trade_id} [#ff5555]workflow terminated ✗[/]"
+            )
+
+    def log_pending_review(self, trade_id: str, spread_pct: float) -> None:
+        """Log a [PENDING-REVIEW] event when ArbitrageEvaluator finds grey zone margin (3-5%)."""
+        try:
+            audit_log = self.query_one("#audit-log", RichLog)
+            ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
+            audit_log.write(
+                f"[#8899aa]{ts}[/] [bold #ff9800][PENDING-REVIEW][/] "
+                f"trade={trade_id} margin={spread_pct:.1f}% "
+                f"[bold #ff9800]⚠ GREY ZONE (3-5%) — awaiting OVRD command[/]"
+            )
+        except Exception:
+            pass  # TUI not mounted
 
     async def on_unmount(self) -> None:
         await self._bus.stop()

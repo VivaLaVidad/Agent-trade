@@ -5,14 +5,18 @@ agents.procurement_graph — Buy-side 采购蜂群子图 (背靠背套利引擎)
 
 流程::
 
-    ScoutNode → BiddingNode (async) → ArbitrageEvaluator → [spread > 5%?]
-                                                              ├─ Yes → LockOrder + Persist (strict)
-                                                              └─ No  → HedgeFailed 熔断
+    ScoutNode → BiddingNode (async) → ArbitrageEvaluator
+      → [spread ≥ 有效阈值?] Yes → LockOrder + Persist (strict)
+      → [3% ≤ spread < 阈值?] Grey zone → pending_review + 总线 PENDING_REVIEW（等 OVRD）
+      → 否则 → HedgeFailed 熔断
+
+    有效阈值 = MIN_ARBITRAGE_PCT，或由 matching_graph._margin_overrides[matched_trade_id] 覆盖（Bloomberg OVRD）。
 
 强一致性约束:
   - 全局统一 Event Loop，无 asyncio.new_event_loop() 反模式
   - BiddingNode 使用原生 async + asyncio.gather
-  - DB 写入失败 → DatabaseOperationalError → 级联熔断
+  - DB 写入失败 → DatabaseOperationalError → 级联熔断（默认；
+    仅本地无 PG 时可设 TS_PROCUREMENT_STRICT_DB=0 跳过写入，禁止生产）
   - matched_trade_id 必须从 Sell-side 注入，否则 TransactionContextMissing
   - 所有 PO 生成 SHA-256 防篡改哈希
 """
@@ -22,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import random
 import uuid
 from datetime import datetime, timezone
@@ -36,6 +41,36 @@ logger = get_logger(__name__)
 
 # 最低套利率阈值
 MIN_ARBITRAGE_PCT = 5.0
+# 灰色地带下限：低于默认阈值但高于此值时进入人工复核（不自动锁、不持久化）
+GREY_ZONE_LOW_PCT = 3.0
+
+
+def _effective_min_arbitrage_pct(matched_trade_id: str) -> float:
+    """Bloomberg OVRD 写入 matching_graph._margin_overrides[trade_id] 时覆盖默认阈值。"""
+    tid = str(matched_trade_id or "").strip()
+    if not tid:
+        return MIN_ARBITRAGE_PCT
+    try:
+        from modules.supply_chain.matching_graph import _margin_overrides as reg
+
+        forced = reg.get(tid)
+        if forced is not None:
+            v = float(forced)
+            if 0.0 <= v <= 100.0:
+                return v
+    except Exception:
+        pass
+    return MIN_ARBITRAGE_PCT
+
+
+def _procurement_persist_strict_db() -> bool:
+    """采购锁单是否必须落库成功。
+
+    默认 ``True``（生产/联调强一致）。本地无 PostgreSQL 时可设
+    ``TS_PROCUREMENT_STRICT_DB=0`` 仅记录警告并跳过写入（禁止用于生产）。
+    """
+    v = os.environ.get("TS_PROCUREMENT_STRICT_DB", "1").strip().lower()
+    return v not in ("0", "false", "off", "no")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -243,6 +278,7 @@ async def arbitrage_evaluator(state: ProcurementState) -> dict[str, Any]:
     buy_price = best.get("total_cost_usd", 0)
     spread = round(sell_price - buy_price - shipping, 2)
     spread_pct = round((spread / sell_price * 100) if sell_price > 0 else 0, 2)
+    min_required = _effective_min_arbitrage_pct(matched_trade_id)
 
     result = {
         "sell_price_usd": sell_price,
@@ -250,13 +286,13 @@ async def arbitrage_evaluator(state: ProcurementState) -> dict[str, Any]:
         "shipping_usd": shipping,
         "spread_usd": spread,
         "spread_pct": spread_pct,
-        "min_required_pct": MIN_ARBITRAGE_PCT,
+        "min_required_pct": min_required,
         "supplier_id": best.get("supplier_id", ""),
         "supplier_name": best.get("supplier_name", ""),
         "matched_trade_id": matched_trade_id,
     }
 
-    if spread_pct >= MIN_ARBITRAGE_PCT:
+    if spread_pct >= min_required:
         if not str(matched_trade_id or "").strip():
             raise TransactionContextMissing(
                 "HEDGE_LOCKED 必须绑定 Sell-side matched_trade_id，禁止空 ID 锁单",
@@ -324,17 +360,52 @@ async def arbitrage_evaluator(state: ProcurementState) -> dict[str, Any]:
             "status": "hedge_locked",
         }
 
+    # 灰色地带 [GREY_ZONE_LOW_PCT, min_required)：不锁单、不持久化，广播审计事件
+    if spread_pct >= GREY_ZONE_LOW_PCT:
+        result["passed"] = False
+        result["decision"] = "PENDING_REVIEW"
+        tid_short = matched_trade_id[:12] if len(matched_trade_id) >= 12 else matched_trade_id
+        logger.warning(
+            "[PENDING-REVIEW] trade=%s margin=%.2f%% grey_zone [%.1f%%, %.1f%%) — await OVRD",
+            tid_short, spread_pct, GREY_ZONE_LOW_PCT, min_required,
+        )
+        bus = get_market_bus()
+        event = MarketEvent(
+            event_type=EventType.PENDING_REVIEW,
+            ticker_id=best.get("ticker_id") or "SYSTEM",
+            data={
+                "trade_id": matched_trade_id,
+                "spread_usd": spread,
+                "spread_pct": spread_pct,
+                "min_required_pct": min_required,
+                "grey_low_pct": GREY_ZONE_LOW_PCT,
+                "supplier": best.get("supplier_name", ""),
+            },
+        )
+        try:
+            await bus.publish(event)
+        except Exception as exc:
+            logger.warning("PENDING_REVIEW 广播失败: %s", exc)
+
+        return {
+            "arbitrage_result": result,
+            "status": "pending_review",
+            "error": (
+                f"灰色地带: {spread_pct:.1f}% ∈ [{GREY_ZONE_LOW_PCT}, {min_required}) — 待人工 OVRD 或调价"
+            ),
+        }
+
     result["passed"] = False
     result["decision"] = "HEDGE_FAILED"
     logger.warning(
         "ArbitrageEvaluator: HEDGE_FAILED spread=$%.2f (%.1f%% < %.1f%%)",
-        spread, spread_pct, MIN_ARBITRAGE_PCT,
+        spread, spread_pct, min_required,
     )
 
     return {
         "arbitrage_result": result,
         "status": "hedge_failed",
-        "error": f"套利率不足: {spread_pct:.1f}% < {MIN_ARBITRAGE_PCT}%",
+        "error": f"套利率不足: {spread_pct:.1f}% < {GREY_ZONE_LOW_PCT}%",
     }
 
 
@@ -376,6 +447,12 @@ async def _persist_procurement_order_strict(po_data: dict[str, Any]) -> None:
                 attempt, max_retries, exc,
             )
             if attempt >= max_retries:
+                if not _procurement_persist_strict_db():
+                    logger.warning(
+                        "TS_PROCUREMENT_STRICT_DB=0: ProcurementOrder 持久化已跳过（"
+                        "OperationalError 用尽重试）。仅用于无 DB 的本地开发；禁止生产。"
+                    )
+                    return
                 raise DatabaseOperationalError("ProcurementOrder 持久化", exc) from exc
             await asyncio.sleep(0.05 * attempt)
         except DatabaseOperationalError:
