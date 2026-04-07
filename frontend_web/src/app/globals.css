@@ -1,0 +1,151 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-neon-green: #00ff88;
+  --color-neon-red: #ff0044;
+  --color-neon-amber: #ffaa00;
+  --color-neon-blue: #00aaff;
+  --color-bloomberg-bg: #0a0a0a;
+  --color-bloomberg-border: #1a1a1a;
+  --color-god-bg-start: #050a15;
+  --color-god-bg-end: #0a1628;
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+:root {
+  --background: #fafafa;
+  --foreground: #0a0a0a;
+  --muted: #f4f4f5;
+  --muted-foreground: #71717a;
+  --border: #e4e4e7;
+  --card: #ffffff;
+  --card-foreground: #0a0a0a;
+  --accent: #f4f4f5;
+  --accent-foreground: #18181b;
+}
+
+.dark {
+  --background: #0a0a0a;
+  --foreground: #fafafa;
+  --muted: #27272a;
+  --muted-foreground: #a1a1aa;
+  --border: #27272a;
+  --card: #18181b;
+  --card-foreground: #fafafa;
+  --accent: #27272a;
+  --accent-foreground: #fafafa;
+}
+
+* {
+  border-color: var(--border);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Glassmorphism utility */
+.glass {
+  background: rgba(255, 255, 255, 0.6);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.glass-dark {
+  background: rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Bloomberg terminal scrollbar */
+.bloomberg-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+.bloomberg-scroll::-webkit-scrollbar-track {
+  background: #0a0a0a;
+}
+.bloomberg-scroll::-webkit-scrollbar-thumb {
+  background: #333;
+  border-radius: 2px;
+}
+
+/* Pulse animation for connection indicators */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+.animate-pulse-dot {
+  animation: pulse-dot 1.5s ease-in-out infinite;
+}
+
+/* Radar scan animation */
+@keyframes radar-sweep {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.animate-radar-sweep {
+  animation: radar-sweep 2s linear infinite;
+}
+
+@keyframes radar-ping {
+  0% { transform: scale(0.5); opacity: 0.8; }
+  100% { transform: scale(2.5); opacity: 0; }
+}
+.animate-radar-ping {
+  animation: radar-ping 1.5s ease-out infinite;
+}
+
+/* Typewriter cursor blink */
+@keyframes blink-cursor {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+.animate-blink-cursor {
+  animation: blink-cursor 0.8s step-end infinite;
+}
+
+/* Flash row for market ticks */
+@keyframes flash-green {
+  0% { background-color: rgba(0, 255, 136, 0.3); }
+  100% { background-color: transparent; }
+}
+@keyframes flash-red {
+  0% { background-color: rgba(255, 0, 68, 0.3); }
+  100% { background-color: transparent; }
+}
+.flash-green { animation: flash-green 0.5s ease-out; }
+.flash-red { animation: flash-red 0.5s ease-out; }
+
+/* Amber border pulse for HITL */
+@keyframes amber-pulse {
+  0%, 100% { border-color: rgba(255, 170, 0, 0.3); }
+  50% { border-color: rgba(255, 170, 0, 0.9); }
+}
+.animate-amber-pulse {
+  animation: amber-pulse 1.5s ease-in-out infinite;
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

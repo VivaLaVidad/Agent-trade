@@ -5,8 +5,12 @@
 # --- Web Framework ---
 fastapi>=0.115.0
 uvicorn[standard]>=0.34.0
+gunicorn>=22.0.0
 pydantic>=2.10.0
 pydantic-settings>=2.7.0
+
+# --- Rate Limiting ---
+slowapi>=0.1.9
 
 # --- LLM & Agent Framework ---
 langchain>=0.3.14

@@ -73,11 +73,12 @@ def test_compliance_gateway_sanitize() -> None:
 
 
 def test_idempotency_guard_memory() -> None:
+    import uuid
     from core.security import IdempotencyGuard
 
     async def _run() -> None:
         g = IdempotencyGuard(ttl_seconds=3600)
-        tid = "smoke-test-trade-001"
+        tid = f"smoke-test-{uuid.uuid4().hex[:8]}"
         assert await g.check_and_acquire(tid) is True
         assert await g.check_and_acquire(tid) is False
         await g.release(tid)

@@ -24,6 +24,7 @@ from playwright.async_api import (
 from pydantic_settings import BaseSettings
 
 from core.logger import get_logger
+from core.demo_config import is_demo_mode
 
 logger = get_logger(__name__)
 
@@ -161,6 +162,13 @@ class StealthBrowser:
         """
         task_type = params.get("task_type", "")
         logger.info("执行 RPA 任务: type=%s", task_type)
+
+        # ── Demo Mode: 拦截 Playwright 调用，返回模拟成功 ──
+        if is_demo_mode():
+            action = f"StealthBrowser.execute_task(type={task_type})"
+            logger.info("[DEMO MODE] 物理暗箱操作已拦截 -> 虚拟执行动作: %s", action)
+            await asyncio.sleep(1.5)
+            return {"status": "demo_success", "task_type": task_type}
 
         dispatch = {
             "login": self._task_login,

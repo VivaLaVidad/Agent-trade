@@ -287,7 +287,7 @@ class BloombergTUI(App):
     def __init__(self) -> None:
         super().__init__()
         self._tick_engine = TickPricingEngine()
-        self._registry = get_ticker_registry()
+        self._ticker_reg = get_ticker_registry()
         self._bus = get_market_bus()
         self._ticker_cache: dict[str, dict] = {}
         self._tick_count = 0
@@ -317,7 +317,7 @@ class BloombergTUI(App):
 
         # 注册演示 Ticker
         for cat, name in _DEMO_TICKERS:
-            ticker = self._registry.resolve(cat, name)
+            ticker = self._ticker_reg.resolve(cat, name)
             self._ticker_cache[ticker.ticker_id] = {
                 "ticker_id": ticker.ticker_id,
                 "category": cat,

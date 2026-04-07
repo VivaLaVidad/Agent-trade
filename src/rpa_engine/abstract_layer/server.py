@@ -20,6 +20,7 @@ import grpc
 from rpa_engine.abstract_layer import rpa_pb2, rpa_pb2_grpc
 from rpa_engine.browser_stealth import StealthBrowser
 from core.logger import get_logger
+from core.demo_config import is_demo_mode
 
 logger = get_logger(__name__)
 
@@ -51,6 +52,18 @@ class RPAServicer(rpa_pb2_grpc.RPAServiceServicer):
         task_id: str = request.task_id
         task_type: str = request.task_type
         logger.info("gRPC ExecuteTask: id=%s type=%s", task_id, task_type)
+
+        # ── Demo Mode: 拦截 Playwright 调用，返回模拟成功 ──
+        if is_demo_mode():
+            action = f"gRPC.ExecuteTask(id={task_id}, type={task_type})"
+            logger.info("[DEMO MODE] 物理暗箱操作已拦截 -> 虚拟执行动作: %s", action)
+            await asyncio.sleep(1.5)
+            mock_result = {"status": "demo_success", "task_id": task_id, "task_type": task_type}
+            return rpa_pb2.TaskResponse(
+                success=True,
+                result_json=json.dumps(mock_result, ensure_ascii=False),
+                error="",
+            )
 
         try:
             params: dict[str, Any] = json.loads(request.params_json)

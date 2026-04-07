@@ -18,6 +18,10 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import ORJSONResponse
 from pydantic import BaseModel, Field
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
+from starlette.responses import JSONResponse
 
 from core.logger import get_logger, sanitize_dict
 from core.security import MachineAuth, require_machine_auth
@@ -30,6 +34,16 @@ from database.task_recovery import TaskRecoveryManager
 from monitor.heartbeat import HeartbeatMonitor
 
 logger = get_logger(__name__)
+
+# ─── Rate Limiter ────────────────────────────────────────────
+limiter = Limiter(key_func=get_remote_address)
+
+
+def _rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    return JSONResponse(
+        status_code=429,
+        content={"error": "Terminal overloaded. Please wait for the current agent negotiations to settle."},
+    )
 
 
 # ─── Lifespan ────────────────────────────────────────────────
@@ -95,6 +109,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("系统已关闭")
 
 
+# ─── CORS Origins ────────────────────────────────────────────
+_DEFAULT_ORIGINS = "http://127.0.0.1:3000,http://localhost:3000"
+ALLOWED_ORIGINS: list[str] = [
+    o.strip()
+    for o in os.getenv("ALLOWED_ORIGINS", _DEFAULT_ORIGINS).split(",")
+    if o.strip()
+]
+
 # ─── App ─────────────────────────────────────────────────────
 app = FastAPI(
     title="TradeStealth_Core",
@@ -105,11 +127,15 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# CORS: 使用 ALLOWED_ORIGINS 环境变量，禁止 *
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:*"],
-    allow_methods=["POST"],
-    allow_headers=["X-Hardware-Token"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "X-Hardware-Token", "Authorization"],
 )
 
 
@@ -132,6 +158,7 @@ class TradeResponse(BaseModel):
     response_model=TradeResponse,
     dependencies=[Depends(require_machine_auth)],
 )
+@limiter.limit("3/minute")
 async def execute_workflow(req: TradeRequest, request: Request) -> TradeResponse:
     """主执行入口：接收意图 → Agent 编排 → 返回结果"""
     logger.info("收到请求 session=%s", req.session_id)

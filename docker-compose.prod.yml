@@ -1,0 +1,55 @@
+# ═══════════════════════════════════════════════════
+#  TradeStealth_Core — Production Docker Compose
+# ═══════════════════════════════════════════════════
+version: "3.9"
+
+services:
+  # ─── Backend API ──────────────────────────────────
+  agent-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: tradestealth-backend
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8900:8900"
+    volumes:
+      - ./db:/app/db
+      - ./logs:/app/logs
+    depends_on:
+      agent-postgres:
+        condition: service_healthy
+      agent-redis:
+        condition: service_healthy
+
+  # ─── PostgreSQL ───────────────────────────────────
+  agent-postgres:
+    image: postgres:15-alpine
+    container_name: tradestealth-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: tradestealth
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ─── Redis ────────────────────────────────────────
+  agent-redis:
+    image: redis:7-alpine
+    container_name: tradestealth-redis
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pgdata:
