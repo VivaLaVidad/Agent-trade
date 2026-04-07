@@ -53,6 +53,7 @@ class MatchState(TypedDict, total=False):
     buyer_selection: dict[str, Any]  # 买家选择的报价方案
     purchase_order: dict[str, Any]
     invoice_result: dict[str, Any]   # DocuForge 文档生成结果
+    sell_side_transaction_id: str     # Sell-side 交易 ID (用于背靠背对应)
     procurement_result: dict[str, Any]  # Buy-side 采购对冲结果
     status: str
     error: str
@@ -556,12 +557,21 @@ def supply_scout_node(state: MatchState) -> dict[str, Any]:
 
 
 def _procurement_node(state: MatchState) -> dict[str, Any]:
-    """Buy-side 采购对冲节点: PI 发出后静默启动上游锁单
+    """Buy-side 采购对冲节点: PI 发出后静默启动上游锁单 (强一致性版本)
 
     在 docuforge_node 生成 PI 后自动触发。
-    调用 procurement_graph 子图执行:
-      ScoutNode → BiddingNode → ArbitrageEvaluator
+    强一致性约束:
+      - 必须从 MatchState 提取 sell_side_transaction_id
+      - 缺失则抛出 TransactionContextMissing
+      - DB 写入失败 → DatabaseOperationalError → 级联熔断
+      - 级联熔断时 PI 发送也会被标记为无效
     """
+    from agents.procurement_graph import (
+        DatabaseOperationalError,
+        TransactionContextMissing,
+        run_procurement_sync,
+    )
+
     neg = state.get("negotiation_result", {})
     demand = state.get("structured_demand", {})
     best = neg.get("best_match", {})
@@ -571,9 +581,26 @@ def _procurement_node(state: MatchState) -> dict[str, Any]:
     if not best or invoice.get("status") != "generated":
         return {"procurement_result": {"triggered": False, "reason": "no_pi_generated"}}
 
-    try:
-        from agents.procurement_graph import run_procurement_sync
+    # 强制提取 Sell-side transaction_id
+    sell_txn_id = state.get("sell_side_transaction_id", "")
+    if not sell_txn_id:
+        # 演示降级：无 transaction_id 时用 PO 号占位（生产应对接真实 ledger transaction_id）
+        po = state.get("purchase_order", {})
+        sell_txn_id = (po.get("transaction_id") or po.get("po_number") or "").strip()
 
+    if not sell_txn_id:
+        logger.error("[FATAL] TransactionContextMissing: 无法建立背靠背对应关系")
+        return {
+            "procurement_result": {
+                "triggered": True,
+                "status": "fatal_error",
+                "error": "TransactionContextMissing: Sell-side transaction_id 未注入",
+            },
+            "status": "cascade_failure",
+            "error": "TransactionContextMissing",
+        }
+
+    try:
         target_sku = {
             "ticker_id": best.get("ticker_id", ""),
             "sku_name": best.get("sku_name", ""),
@@ -588,6 +615,7 @@ def _procurement_node(state: MatchState) -> dict[str, Any]:
             required_qty=qty,
             sell_price_usd=sell_price,
             shipping_estimate_usd=shipping,
+            matched_trade_id=sell_txn_id,
         )
 
         procurement_status = result.get("status", "unknown")
@@ -595,16 +623,18 @@ def _procurement_node(state: MatchState) -> dict[str, Any]:
         final_po = result.get("final_po", {})
 
         logger.info(
-            "采购对冲: status=%s spread=$%.2f (%.1f%%)",
+            "采购对冲: status=%s spread=$%.2f (%.1f%%) trade=%s",
             procurement_status,
             arb.get("spread_usd", 0),
             arb.get("spread_pct", 0),
+            sell_txn_id[:12],
         )
 
         return {
             "procurement_result": {
                 "triggered": True,
                 "status": procurement_status,
+                "matched_trade_id": sell_txn_id,
                 "arbitrage_spread_usd": arb.get("spread_usd", 0),
                 "arbitrage_spread_pct": arb.get("spread_pct", 0),
                 "supplier_name": arb.get("supplier_name", ""),
@@ -612,6 +642,36 @@ def _procurement_node(state: MatchState) -> dict[str, Any]:
                 "po_number": final_po.get("po_number", ""),
             },
         }
+
+    except DatabaseOperationalError as exc:
+        # DB 写入失败 → 级联熔断: PI 也标记为无效
+        logger.error(
+            "[FATAL] 账本写入失败，终止套利对冲: %s (trade=%s)",
+            exc, sell_txn_id[:12],
+        )
+        return {
+            "procurement_result": {
+                "triggered": True,
+                "status": "cascade_failure",
+                "error": f"[FATAL] 账本写入失败: {exc}",
+                "matched_trade_id": sell_txn_id,
+            },
+            "status": "cascade_failure",
+            "error": f"[FATAL] DatabaseOperationalError: {exc}",
+        }
+
+    except TransactionContextMissing as exc:
+        logger.error("[FATAL] %s", exc)
+        return {
+            "procurement_result": {
+                "triggered": True,
+                "status": "fatal_error",
+                "error": str(exc),
+            },
+            "status": "cascade_failure",
+            "error": str(exc),
+        }
+
     except Exception as exc:
         logger.error("采购对冲节点异常: %s", exc)
         return {
