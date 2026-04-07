@@ -228,3 +228,62 @@ class NegotiationRound(Base):
         comment="差值高亮 {old_price, new_price, delta_usd, delta_pct, direction}",
     )
     created_at: Mapped[datetime] = _ts_created()
+
+
+class UpstreamSupplier(Base):
+    """上游供应商 —— Buy-side 采购对冲的供应商池"""
+    __tablename__ = "upstream_suppliers"
+
+    id: Mapped[str] = _uuid_pk()
+    supplier_name: Mapped[str] = mapped_column(String(256), comment="上游供应商名称")
+    region: Mapped[str] = mapped_column(String(100), default="", comment="所在地区")
+    credibility_score: Mapped[float] = mapped_column(
+        Float, default=80.0, comment="信用评分 0-100",
+    )
+    api_endpoint: Mapped[str] = mapped_column(
+        String(512), default="", comment="询价 API 端点 (mock 或真实)",
+    )
+    specialties: Mapped[Optional[dict]] = mapped_column(
+        JSON, default=None, comment="擅长品类 ['capacitor','resistor',...]",
+    )
+    min_order_usd: Mapped[float] = mapped_column(Float, default=50.0, comment="最低采购额(USD)")
+    avg_lead_days: Mapped[int] = mapped_column(Integer, default=7, comment="平均交期(天)")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = _ts_created()
+    updated_at: Mapped[datetime] = _ts_updated()
+
+
+class ProcurementOrder(Base):
+    """采购锁单 —— Buy-side 背靠背套利的上游 PO"""
+    __tablename__ = "procurement_orders"
+    __table_args__ = (
+        Index("ix_procurement_trade", "matched_trade_id"),
+        Index("ix_procurement_supplier", "supplier_id"),
+    )
+
+    id: Mapped[str] = _uuid_pk()
+    po_hash: Mapped[str] = mapped_column(
+        String(64), unique=True, comment="SHA-256 采购单哈希 (防篡改)",
+    )
+    matched_trade_id: Mapped[str] = mapped_column(
+        String(36), comment="关联的 Sell-side 交易流水号",
+    )
+    supplier_id: Mapped[str] = mapped_column(
+        String(36), comment="上游供应商 ID",
+    )
+    supplier_name: Mapped[str] = mapped_column(String(256), default="", comment="上游供应商名称")
+    ticker_id: Mapped[str] = mapped_column(String(64), default="", comment="标准化 Ticker ID")
+    cost_price_usd: Mapped[float] = mapped_column(Float, comment="采购成本价(USD)")
+    sell_price_usd: Mapped[float] = mapped_column(Float, default=0.0, comment="对外售价(USD)")
+    quantity: Mapped[int] = mapped_column(Integer, default=0, comment="采购数量")
+    shipping_estimate_usd: Mapped[float] = mapped_column(Float, default=0.0, comment="预估运费(USD)")
+    arbitrage_spread_usd: Mapped[float] = mapped_column(
+        Float, default=0.0, comment="套利差 = sell - cost - shipping",
+    )
+    arbitrage_pct: Mapped[float] = mapped_column(Float, default=0.0, comment="套利率(%)")
+    lock_status: Mapped[str] = mapped_column(
+        String(20), default="pending",
+        comment="pending / locked / failed / cancelled",
+    )
+    document_hash: Mapped[str] = mapped_column(String(64), default="", comment="PO PDF SHA-256")
+    created_at: Mapped[datetime] = _ts_created()
