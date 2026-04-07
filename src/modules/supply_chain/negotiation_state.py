@@ -17,6 +17,7 @@ modules.supply_chain.negotiation_state — 谈判状态机
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -249,30 +250,49 @@ class NegotiationStateMachine:
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
 
-    # ── 持久化 ────────────────────────────────────────────────
+    # ── 持久化 (含 OperationalError 重试) ─────────────────────
 
     async def persist_round(self, round_record: dict[str, Any]) -> None:
-        """将谈判轮次写入数据库"""
-        try:
-            from database.models import AsyncSessionFactory
-            from modules.supply_chain.models import NegotiationRound
+        """将谈判轮次写入数据库 (含死锁重试；用尽后抛出 OperationalError)"""
+        from sqlalchemy.exc import OperationalError
 
-            async with AsyncSessionFactory() as session:
-                entry = NegotiationRound(
-                    id=round_record["round_id"],
-                    negotiation_id=self.negotiation_id,
-                    match_id=self.match_id,
-                    demand_id=self.demand_id,
-                    merchant_id=self.merchant_id,
-                    client_id=self.client_id,
-                    round_number=round_record["round_number"],
-                    status=round_record["status"],
-                    action=round_record["action"],
-                    seller_offer=round_record.get("seller_offer"),
-                    buyer_offer=round_record.get("buyer_offer"),
-                    delta_highlight=round_record.get("delta_highlight"),
+        max_retries = 3
+        last_oe: OperationalError | None = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                from database.models import AsyncSessionFactory
+                from modules.supply_chain.models import NegotiationRound
+
+                async with AsyncSessionFactory() as session:
+                    entry = NegotiationRound(
+                        id=round_record["round_id"],
+                        negotiation_id=self.negotiation_id,
+                        match_id=self.match_id,
+                        demand_id=self.demand_id,
+                        merchant_id=self.merchant_id,
+                        client_id=self.client_id,
+                        round_number=round_record["round_number"],
+                        status=round_record["status"],
+                        action=round_record["action"],
+                        seller_offer=round_record.get("seller_offer"),
+                        buyer_offer=round_record.get("buyer_offer"),
+                        delta_highlight=round_record.get("delta_highlight"),
+                    )
+                    session.add(entry)
+                    await session.commit()
+                return  # 成功
+            except OperationalError as exc:
+                last_oe = exc
+                logger.warning(
+                    "谈判轮次入库 OperationalError (attempt %d/%d): %s",
+                    attempt, max_retries, exc,
                 )
-                session.add(entry)
-                await session.commit()
-        except Exception as exc:
-            logger.error("谈判轮次入库失败: %s", exc)
+                if attempt < max_retries:
+                    await asyncio.sleep(0.05 * attempt)
+                else:
+                    logger.error("谈判轮次入库最终失败 (死锁/连接): %s", exc)
+            except Exception as exc:
+                logger.error("谈判轮次入库失败: %s", exc)
+                raise
+        if last_oe is not None:
+            raise last_oe
