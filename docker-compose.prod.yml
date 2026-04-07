@@ -1,7 +1,6 @@
 # ═══════════════════════════════════════════════════
 #  TradeStealth_Core — Production Docker Compose
 # ═══════════════════════════════════════════════════
-version: "3.9"
 
 services:
   # ─── Backend API ──────────────────────────────────
@@ -25,7 +24,7 @@ services:
 
   # ─── PostgreSQL ───────────────────────────────────
   agent-postgres:
-    image: postgres:15-alpine
+    image: postgres:15
     container_name: tradestealth-postgres
     restart: unless-stopped
     environment:
@@ -42,7 +41,7 @@ services:
 
   # ─── Redis ────────────────────────────────────────
   agent-redis:
-    image: redis:7-alpine
+    image: redis:7
     container_name: tradestealth-redis
     restart: unless-stopped
     healthcheck:
