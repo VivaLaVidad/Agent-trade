@@ -241,9 +241,10 @@ def test_negotiator_volatility_interrupt() -> None:
             certs_req: list,
             destination: str,
             log: list,
+            **kwargs,
         ) -> dict:
             r = _orig_eval(
-                self, cand, quantity, budget_usd, certs_req, destination, log,
+                self, cand, quantity, budget_usd, certs_req, destination, log, **kwargs,
             )
             if r.get("status") == "approved":
                 first_approved.set()

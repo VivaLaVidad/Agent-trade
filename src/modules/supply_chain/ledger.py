@@ -117,7 +117,7 @@ class LedgerService:
         return expected == record.get("signature", "")
 
     async def persist(self, record: dict[str, Any]) -> None:
-        """将流水写入数据库 (含 OperationalError 重试)"""
+        """将流水写入数据库 (含 OperationalError 重试 + EpisodicMemory 画像更新)"""
         from sqlalchemy.exc import OperationalError
 
         last_oe: OperationalError | None = None
@@ -142,6 +142,9 @@ class LedgerService:
                     )
                     session.add(entry)
                     await session.commit()
+
+                # 成功入库后，fire-and-forget 更新客户画像
+                await self._update_opponent_profile(record)
                 return  # 成功
             except OperationalError as exc:
                 last_oe = exc
@@ -207,3 +210,23 @@ class LedgerService:
         if last_oe is not None:
             raise last_oe
         return []
+
+    @staticmethod
+    async def _update_opponent_profile(record: dict[str, Any]) -> None:
+        """Fire-and-forget: 更新客户谈判行为画像 (EpisodicMemory)"""
+        client_id = record.get("client_id", "")
+        if not client_id:
+            return
+        try:
+            from core.long_term_memory import get_opponent_profiler
+
+            profiler = get_opponent_profiler()
+            await profiler.update_profile(
+                client_id=client_id,
+                outcome="accepted" if record.get("status") == "settled" else "rejected",
+                discount_pct=0.0,  # 实际折让率需从谈判上下文传入
+                counter_rounds=0,
+                amount_usd=record.get("amount_usd", 0),
+            )
+        except Exception as exc:
+            logger.debug("画像更新跳过 (fire-and-forget): %s", exc)

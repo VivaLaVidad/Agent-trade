@@ -158,16 +158,20 @@ class PurchaseOrder(Base):
 
 
 class TransactionLedger(Base):
-    """交易账本 —— 每笔撮合成交自动生成流水 + 路由费 + SHA256 签名"""
+    """交易账本 —— 每笔撮合成交自动生成流水 + 路由费 + SHA256 签名 + Ticker ID"""
     __tablename__ = "transaction_ledger"
     __table_args__ = (
         Index("ix_ledger_merchant", "merchant_id"),
         Index("ix_ledger_created", "created_at"),
+        Index("ix_ledger_ticker", "ticker_id"),
     )
 
     id: Mapped[str] = _uuid_pk()
     transaction_id: Mapped[str] = mapped_column(
         String(36), unique=True, comment="交易流水号(UUID)",
+    )
+    ticker_id: Mapped[str] = mapped_column(
+        String(64), default="", comment="标准化 Ticker ID (CLAW-ELEC-CAP-100NF50V)",
     )
     merchant_id: Mapped[str] = mapped_column(String(36), comment="撮合商户ID")
     client_id: Mapped[str] = mapped_column(String(36), default="", comment="C端客户ID")
@@ -179,7 +183,7 @@ class TransactionLedger(Base):
     routing_fee_usd: Mapped[float] = mapped_column(Float, comment="路由费(USD) = amount * 1%")
     fee_rate: Mapped[float] = mapped_column(Float, default=0.01, comment="费率")
     signature: Mapped[str] = mapped_column(
-        String(64), comment="SHA256 数字签名（防篡改）",
+        String(64), comment="SHA256 数字签名（防篡改，含 Ticker ID）",
     )
     status: Mapped[str] = mapped_column(
         String(20), default="settled", comment="settled/pending/reversed",

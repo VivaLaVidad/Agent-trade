@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 from core.logger import get_logger, sanitize_dict
 from core.security import MachineAuth, require_machine_auth
 from core.agent_context import AgentContext
+from core.ticker_plant import get_market_bus
 from agents.workflow_graph import WorkflowOrchestrator
 from database.models import async_engine, create_tables
 from database.pg_checkpointer import get_pg_checkpointer, shutdown_pg_checkpointer
@@ -76,11 +77,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await get_pg_checkpointer()
     app.state.orchestrator = WorkflowOrchestrator()
 
+    # 6. MarketDataBus 启动（Ticker Plant 事件总线）
+    market_bus = get_market_bus()
+    await market_bus.start()
+    app.state.market_bus = market_bus
+
     logger.info("Project Claw 系统就绪 — 已加载模块: %s",
                 ", ".join(ctx.registry.list_all()))
 
     yield
 
+    await market_bus.stop()
     await watchdog.stop()
     await heartbeat.stop()
     await shutdown_pg_checkpointer()

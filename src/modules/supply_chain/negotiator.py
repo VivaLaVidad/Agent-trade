@@ -74,6 +74,7 @@ class NegotiatorAgent:
         budget_usd: float = float(demand.get("budget_usd", 0))
         certs_req: list = demand.get("certs_required", [])
         destination: str = demand.get("destination", "")
+        client_id: str = demand.get("client_id", "")
 
         log: list[str] = []
         approved: list[dict] = []
@@ -91,6 +92,26 @@ class NegotiatorAgent:
             )
             cand["ticker_id"] = ticker.ticker_id
             ticker_ids.add(ticker.ticker_id)
+
+        # ── 1.5 EpisodicMemory: 读取客户画像，动态调整报价策略 ──
+        opponent_markup = 0.0
+        if client_id:
+            try:
+                from core.long_term_memory import get_opponent_profiler
+                profiler = get_opponent_profiler()
+                profile = await profiler.get_profile(client_id)
+                if profile:
+                    opponent_markup = profiler.compute_initial_markup(profile)
+                    context_prompt = profiler.format_context_prompt(profile)
+                    for line in context_prompt.split("\n"):
+                        log.append(line)
+                    if opponent_markup != 0:
+                        log.append(
+                            f"[MEMORY] 初始报价调整: {opponent_markup:+.0%} "
+                            f"(tag={profile.get('risk_tag', 'normal')})"
+                        )
+            except Exception as exc:
+                logger.debug("EpisodicMemory 查询跳过: %s", exc)
 
         # ── 2. 订阅 MarketDataBus 监听波动率突变 ──
         bus = get_market_bus()
@@ -128,6 +149,7 @@ class NegotiatorAgent:
 
                 result = self._evaluate_candidate(
                     cand, quantity, budget_usd, certs_req, destination, log,
+                    opponent_markup=opponent_markup,
                 )
 
                 if result["status"] == "approved":
@@ -235,6 +257,7 @@ class NegotiatorAgent:
         certs_req: list,
         destination: str,
         log: list[str],
+        opponent_markup: float = 0.0,
     ) -> dict[str, Any]:
         sku_name = cand.get("sku_name", "?")
         sku_id = cand.get("sku_id", "")
@@ -243,6 +266,10 @@ class NegotiatorAgent:
         cand_certs = cand.get("certifications", [])
         unit_price = cand.get("unit_price_rmb", 0)
         supplier_name = cand.get("supplier_name", "?")
+
+        # EpisodicMemory: 应用客户画像报价调整
+        if opponent_markup != 0:
+            unit_price = round(unit_price * (1 + opponent_markup), 4)
 
         shipping_term = self._select_shipping_term(destination)
 

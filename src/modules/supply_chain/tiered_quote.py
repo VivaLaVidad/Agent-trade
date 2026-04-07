@@ -53,7 +53,7 @@ class TieredQuoteEngine:
         Parameters
         ----------
         candidate : dict
-            候选 SKU 信息（含 unit_price_rmb, moq, sku_name 等）
+            候选 SKU 信息（含 unit_price_rmb, moq, sku_name, ticker_id 等）
         demand : dict
             结构化需求（含 quantity, destination, budget_usd 等）
 
@@ -72,6 +72,8 @@ class TieredQuoteEngine:
 
         sku_name: str = candidate.get("sku_name", "")
         supplier_name: str = candidate.get("supplier_name", "")
+        ticker_id: str = candidate.get("ticker_id", "")
+        category: str = candidate.get("category", "")
 
         tiers: list[dict[str, Any]] = []
 
@@ -82,12 +84,15 @@ class TieredQuoteEngine:
             )
             tier_price_rmb = round(base_price_rmb * (1 - discount), 4)
 
-            # Tick-by-Tick 动态定价：基于汇率波动 + 库容压力调整
+            # Tick-by-Tick 动态定价：基于汇率波动 + 库容压力调整 (Ticker 绑定)
             tick_result = self._tick.compute_tick(
                 base_price_rmb=tier_price_rmb,
                 stock_qty=int(candidate.get("stock_qty", 0)),
                 moq=int(candidate.get("moq", 100)),
                 demand_qty=tier_qty,
+                ticker_id=ticker_id,
+                category=category,
+                sku_name=sku_name,
             )
             tick_adjusted_price = tick_result["adjusted_price_rmb"]
 
@@ -103,6 +108,7 @@ class TieredQuoteEngine:
 
             tier = {
                 "option": label,
+                "ticker_id": tick_result.get("ticker_id", ticker_id),
                 "sku_name": sku_name,
                 "supplier_name": supplier_name,
                 "sku_id": candidate.get("sku_id", ""),
@@ -121,13 +127,14 @@ class TieredQuoteEngine:
                 "balance_usd": round(landed["landed_usd"] - prepay_usd, 2),
                 "tick_score": tick_result["tick_score"],
                 "tick_adjustment_pct": tick_result["tick_adjustment_pct"],
+                "is_volatility_spike": tick_result.get("is_volatility_spike", False),
                 "pricing_audit_trail": tick_result["pricing_audit_trail"],
             }
             tiers.append(tier)
 
         logger.info(
-            "阶梯报价生成: sku=%s tiers=%d base=¥%.4f",
-            sku_name[:30], len(tiers), base_price_rmb,
+            "阶梯报价生成: sku=%s ticker=%s tiers=%d base=¥%.4f",
+            sku_name[:30], ticker_id or "N/A", len(tiers), base_price_rmb,
         )
         return tiers
 

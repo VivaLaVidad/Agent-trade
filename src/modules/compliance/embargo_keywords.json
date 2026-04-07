@@ -1,0 +1,27 @@
+{
+  "sanctioned_countries": [
+    "North Korea", "DPRK", "Iran", "Syria", "Cuba", "Crimea",
+    "Donetsk", "Luhansk", "South Sudan", "Somalia"
+  ],
+  "sanctioned_ports": [
+    "Chongjin", "Nampo", "Wonsan",
+    "Bandar Abbas", "Bushehr", "Chabahar",
+    "Latakia", "Tartus",
+    "Mariel"
+  ],
+  "restricted_ticker_prefixes": [
+    "CLAW-ELEC-IC-MIL",
+    "CLAW-ELEC-XFMR-HV",
+    "CLAW-ELEC-SENS-RAD",
+    "CLAW-ELEC-XTAL-MIL",
+    "CLAW-CHEM-EXP",
+    "CLAW-OPTO-LASER-HI"
+  ],
+  "dual_use_keywords": [
+    "military", "nuclear", "encryption-grade", "satellite",
+    "missile", "centrifuge", "warhead", "depleted uranium",
+    "night vision", "thermal imaging", "radar jamming",
+    "stealth coating", "ballistic", "chemical weapon",
+    "biological agent", "detonator", "shaped charge"
+  ]
+}

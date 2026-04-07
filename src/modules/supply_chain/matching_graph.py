@@ -3,15 +3,18 @@ modules.supply_chain.matching_graph — LangGraph 全球工业品撮合工作流
 ──────────────────────────────────────────────────────────────────
 流程：
   START → demand_node（C端需求解析）
+        → reg_guard_node（出口管制 / 制裁黑名单）
         → supply_node（B端供应链检索 / RAG）
-        → risk_defense_node（价格波动熔断 + 库存 Agent，见 agents.agent_workflow）
-        → negotiate_node（贸易谈判决策树 + 阶梯报价）
-        → tiered_quote_node（阶梯报价看板生成 + 谈判状态初始化）
+        → risk_defense_node（价格波动熔断 + 库存 Agent）
+        → negotiate_node（谈判 + EpisodicMemory 画像 markup）
+        → tiered_quote_node（阶梯报价看板 + 谈判状态）
         → [has_tiered_quotes?]
             ├─ Yes → [buyer_accepts?]
-            │          ├─ Yes → po_gen_node（生成采购订单）→ END
-            │          └─ No  → END（返回阶梯报价看板，等待买家选择）
-            └─ No  → END（返回替代/拼单方案）
+            │          ├─ Yes → po_gen_node → docuforge_node（PI PDF + 哈希）→ END
+            │          └─ No  → END
+            └─ No  → END
+
+  reg_guard 命中制裁 → END（REG_DENIED）
 """
 
 from __future__ import annotations
@@ -39,12 +42,14 @@ class MatchState(TypedDict, total=False):
     structured_demand: dict[str, Any]
     candidates: list[dict[str, Any]]
     risk_alerts: list[str]
+    reg_guard_result: dict[str, Any]  # RegGuard 出口管制检查结果
     negotiation_result: dict[str, Any]
     tiered_quotes: list[dict[str, Any]]
     negotiation_status: str          # pending / counter_offer / accepted / rejected
     negotiation_round: int           # 当前谈判轮次
     buyer_selection: dict[str, Any]  # 买家选择的报价方案
     purchase_order: dict[str, Any]
+    invoice_result: dict[str, Any]   # DocuForge 文档生成结果
     status: str
     error: str
 
@@ -368,26 +373,103 @@ def _route_after_tiered(state: MatchState) -> str:
     return "finish"
 
 
+def _docuforge_node(state: MatchState) -> dict[str, Any]:
+    """DocuForge 节点: 交易达成时自动生成 Proforma Invoice PDF + SHA-256 哈希"""
+    import asyncio
+
+    neg = state.get("negotiation_result", {})
+    demand = state.get("structured_demand", {})
+    best = neg.get("best_match", {})
+    po = state.get("purchase_order", {})
+
+    if not best or state.get("status") != "po_generated":
+        return {"invoice_result": {"status": "skipped"}}
+
+    try:
+        from modules.documents.invoice_generator import get_invoice_generator
+
+        generator = get_invoice_generator()
+        txn_data = {
+            "po_number": po.get("po_number", ""),
+            "ticker_id": best.get("ticker_id", ""),
+            "sku_name": best.get("sku_name", ""),
+            "quantity": demand.get("quantity", 0),
+            "unit_price_rmb": best.get("unit_price_rmb", 0),
+            "unit_price_usd": best.get("landed_usd", 0) / max(demand.get("quantity", 1), 1),
+            "total_usd": best.get("total_usd", best.get("landed_usd", 0)),
+            "shipping_usd": best.get("shipping_usd", 0),
+            "landed_usd": best.get("landed_usd", 0),
+            "routing_fee_usd": round(best.get("landed_usd", 0) * 0.01, 2),
+            "fee_rate": 0.01,
+            "fx_rate": best.get("fx_rate", 7.25),
+            "shipping_term": best.get("shipping_term", "FOB"),
+            "payment_term": po.get("payment_term", "T/T 30% deposit"),
+            "moq": best.get("moq", 100),
+            "supplier_name": best.get("supplier_name", ""),
+            "buyer_name": demand.get("buyer_name", ""),
+            "destination": demand.get("destination", ""),
+            "client_id": demand.get("client_id", ""),
+            "transaction_id": po.get("po_number", ""),
+            "offer_disclaimer": best.get("offer_disclaimer", ""),
+        }
+
+        result = generator.generate_pi(txn_data)
+
+        # 持久化哈希
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(generator.hash_and_persist(result))
+        except Exception as exc:
+            logger.warning("DocuForge 哈希持久化跳过: %s", exc)
+        finally:
+            loop.close()
+
+        return {
+            "invoice_result": {
+                "status": "generated",
+                "document_hash": result.get("document_hash", ""),
+                "pdf_generated": result.get("pdf_bytes") is not None,
+                "pdf_path": result.get("pdf_path", ""),
+                "po_number": result.get("po_number", ""),
+            },
+        }
+    except Exception as exc:
+        logger.error("DocuForge 节点异常: %s", exc)
+        return {"invoice_result": {"status": "error", "error": str(exc)}}
+
+
 def build_matching_graph():
     """构建撮合工作流 StateGraph
 
     流程：
-      demand → supply → risk_defense → negotiate → tiered_quote → po_gen
+      demand → reg_guard → supply → risk_defense → negotiate → tiered_quote → po_gen → docuforge
     """
+    from modules.compliance.export_control import reg_guard_node
+
     graph = StateGraph(MatchState)
 
     graph.add_node("demand_node", demand_node)
+    graph.add_node("reg_guard_node", reg_guard_node)
     graph.add_node("supply_node", supply_node)
     graph.add_node("risk_defense_node", risk_defense_node)
     graph.add_node("negotiate_node", negotiate_node)
     graph.add_node("tiered_quote_node", tiered_quote_node)
     graph.add_node("po_gen_node", po_gen_node)
+    graph.add_node("docuforge_node", _docuforge_node)
 
     graph.set_entry_point("demand_node")
 
+    # demand → reg_guard (出口管制检查)
     graph.add_conditional_edges(
         "demand_node",
-        lambda s: "search" if s.get("status") == "demand_parsed" else "finish",
+        lambda s: "reg_check" if s.get("status") == "demand_parsed" else "finish",
+        {"reg_check": "reg_guard_node", "finish": END},
+    )
+
+    # reg_guard → supply (通过) | END (拦截)
+    graph.add_conditional_edges(
+        "reg_guard_node",
+        lambda s: "search" if s.get("status") != "reg_denied" else "finish",
         {"search": "supply_node", "finish": END},
     )
 
@@ -411,7 +493,9 @@ def build_matching_graph():
         {"generate_po": "po_gen_node", "finish": END},
     )
 
-    graph.add_edge("po_gen_node", END)
+    # po_gen → docuforge (自动生成 PI PDF)
+    graph.add_edge("po_gen_node", "docuforge_node")
+    graph.add_edge("docuforge_node", END)
 
     checkpointer = get_pg_checkpointer_sync()
     return graph.compile(checkpointer=checkpointer)

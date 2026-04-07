@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Proforma Invoice — {{ po_number }}</title>
+<style>
+  @page { size: A4; margin: 20mm; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 11px; color: #1a1a2e; line-height: 1.5; }
+  .header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid #0d1b2a; padding-bottom: 12px; margin-bottom: 16px; }
+  .header h1 { font-size: 22px; color: #0d1b2a; letter-spacing: 1px; }
+  .header .doc-type { font-size: 14px; color: #415a77; font-weight: 600; }
+  .header .doc-meta { text-align: right; font-size: 10px; color: #778da9; }
+  .parties { display: flex; gap: 24px; margin-bottom: 16px; }
+  .party-box { flex: 1; border: 1px solid #c8d2dc; border-radius: 4px; padding: 10px 14px; }
+  .party-box h3 { font-size: 11px; color: #415a77; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; border-bottom: 1px solid #e0e6ed; padding-bottom: 4px; }
+  .party-box p { font-size: 10px; margin: 2px 0; }
+  table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+  th { background: #0d1b2a; color: #fff; padding: 8px 10px; text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; }
+  td { padding: 7px 10px; border-bottom: 1px solid #e0e6ed; font-size: 10px; }
+  tr:nth-child(even) td { background: #f8f9fa; }
+  .totals { margin: 16px 0; text-align: right; }
+  .totals table { width: 300px; margin-left: auto; }
+  .totals td { font-size: 11px; padding: 4px 10px; }
+  .totals .grand-total td { font-weight: 700; font-size: 13px; border-top: 2px solid #0d1b2a; color: #0d1b2a; }
+  .terms { margin: 16px 0; padding: 12px; background: #f0f4f8; border-radius: 4px; }
+  .terms h3 { font-size: 11px; color: #415a77; margin-bottom: 6px; }
+  .terms p { font-size: 10px; margin: 2px 0; }
+  .footer { margin-top: 24px; padding-top: 12px; border-top: 2px solid #0d1b2a; display: flex; justify-content: space-between; font-size: 9px; color: #778da9; }
+  .hash-box { margin-top: 16px; padding: 8px 12px; background: #1a1a2e; color: #00e5cc; font-family: 'Consolas', monospace; font-size: 9px; border-radius: 4px; word-break: break-all; }
+  .stamp { text-align: center; margin-top: 20px; padding: 12px; border: 2px dashed #c8d2dc; color: #778da9; font-size: 10px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <h1>PROFORMA INVOICE</h1>
+    <div class="doc-type">Project Claw — TradeStealth Platform</div>
+  </div>
+  <div class="doc-meta">
+    <p><strong>PI No:</strong> {{ po_number }}</p>
+    <p><strong>Date:</strong> {{ date }}</p>
+    <p><strong>Ticker:</strong> {{ ticker_id }}</p>
+    <p><strong>Valid Until:</strong> {{ valid_until }}</p>
+  </div>
+</div>
+
+<div class="parties">
+  <div class="party-box">
+    <h3>Seller</h3>
+    <p><strong>{{ supplier_name }}</strong></p>
+    <p>Shenzhen, China</p>
+    <p>Platform: TradeStealth_Core</p>
+  </div>
+  <div class="party-box">
+    <h3>Buyer</h3>
+    <p><strong>{{ buyer_name or 'N/A' }}</strong></p>
+    <p>{{ destination or 'N/A' }}</p>
+    <p>Client ID: {{ client_id or 'N/A' }}</p>
+  </div>
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>#</th>
+      <th>Ticker ID</th>
+      <th>Description</th>
+      <th>Qty</th>
+      <th>Unit Price (RMB)</th>
+      <th>Unit Price (USD)</th>
+      <th>Total (USD)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>1</td>
+      <td>{{ ticker_id }}</td>
+      <td>{{ sku_name }}</td>
+      <td>{{ quantity }}</td>
+      <td>¥{{ "%.4f"|format(unit_price_rmb) }}</td>
+      <td>${{ "%.4f"|format(unit_price_usd) }}</td>
+      <td>${{ "%.2f"|format(total_usd) }}</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="totals">
+  <table>
+    <tr>
+      <td>Subtotal (FOB):</td>
+      <td>${{ "%.2f"|format(total_usd) }}</td>
+    </tr>
+    <tr>
+      <td>Shipping ({{ shipping_term }}):</td>
+      <td>${{ "%.2f"|format(shipping_usd) }}</td>
+    </tr>
+    <tr>
+      <td>Routing Fee ({{ "%.1f"|format(fee_rate * 100) }}%):</td>
+      <td>${{ "%.2f"|format(routing_fee_usd) }}</td>
+    </tr>
+    <tr class="grand-total">
+      <td>TOTAL LANDED:</td>
+      <td>${{ "%.2f"|format(landed_usd) }}</td>
+    </tr>
+  </table>
+</div>
+
+<div class="terms">
+  <h3>Terms &amp; Conditions</h3>
+  <p><strong>Shipping Term:</strong> {{ shipping_term }}</p>
+  <p><strong>Payment Term:</strong> {{ payment_term }}</p>
+  <p><strong>FX Rate:</strong> 1 USD = {{ "%.4f"|format(fx_rate) }} CNY (snapshot at invoice time)</p>
+  <p><strong>MOQ:</strong> {{ moq }} pcs</p>
+  {% if offer_disclaimer %}
+  <p><strong>Special Note:</strong> {{ offer_disclaimer }}</p>
+  {% endif %}
+</div>
+
+<div class="stamp">
+  This is a computer-generated Proforma Invoice.<br>
+  No signature required. Document integrity verified by SHA-256 hash below.
+</div>
+
+<div class="hash-box">
+  Document Hash (SHA-256): {{ document_hash or 'PENDING — will be computed after PDF generation' }}
+</div>
+
+<div class="footer">
+  <span>Generated by TradeStealth_Core DocuForge Engine</span>
+  <span>Transaction ID: {{ transaction_id }}</span>
+  <span>{{ date }}</span>
+</div>
+
+</body>
+</html>

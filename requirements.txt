@@ -43,6 +43,16 @@ psutil>=5.9.0
 # --- Desktop Control Panel ---
 PyQt6>=6.6.0
 
+# --- Bloomberg TUI (Textual) ---
+textual>=0.89.0
+rich>=13.9.0
+
+# --- DocuForge (Invoice Generation) ---
+Jinja2>=3.1.0
+
+# --- Event Bus (Redis Pub/Sub, optional) ---
+redis>=5.2.0
+
 # --- Utilities ---
 python-dotenv>=1.0.0
 httpx>=0.28.0
