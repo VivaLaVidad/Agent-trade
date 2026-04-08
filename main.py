@@ -51,18 +51,22 @@ def _rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) -> JS
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Project Claw 暗箱平台启动中...")
 
-    # 1. 许可证校验（硬阻断）
-    try:
-        from modules.audit_module.hardware_license import LicenseManager, LicenseError
-        license_mgr = LicenseManager()
-        lic = license_mgr.validate()
-        logger.info("许可证有效: licensee=%s", lic.licensee)
-    except LicenseError as exc:
-        logger.error("许可证验证失败: %s — 系统拒绝启动", exc)
-        raise SystemExit(1) from exc
-    except FileNotFoundError:
-        logger.warning("许可证文件不存在，首次运行自动生成...")
-        LicenseManager().generate_license_file()
+    # 1. 许可证校验（DEMO_MODE 跳过）
+    from core.demo_config import is_demo_mode
+    if is_demo_mode():
+        logger.info("DEMO_MODE 已启用 — 跳过许可证校验")
+    else:
+        try:
+            from modules.audit_module.hardware_license import LicenseManager, LicenseError
+            license_mgr = LicenseManager()
+            lic = license_mgr.validate()
+            logger.info("许可证有效: licensee=%s", lic.licensee)
+        except LicenseError as exc:
+            logger.error("许可证验证失败: %s — 系统拒绝启动", exc)
+            raise SystemExit(1) from exc
+        except FileNotFoundError:
+            logger.warning("许可证文件不存在，首次运行自动生成...")
+            LicenseManager().generate_license_file()
 
     # 2. 断电恢复
     recovery = TaskRecoveryManager()
