@@ -186,6 +186,37 @@ async def execute_workflow(req: TradeRequest, request: Request) -> TradeResponse
     )
 
 
+
+
+# ─── ASKB (Agentic Trader Copilot) ──────────────────────────
+class ASKBRequest(BaseModel):
+    query: str = Field(..., min_length=1, max_length=2048)
+
+
+class ASKBResponse(BaseModel):
+    intent: str
+    tool_used: str | None
+    data: dict
+    recommendation: str
+    status: str
+
+
+@app.post("/api/v1/askb/query", response_model=ASKBResponse)
+@limiter.limit("10/minute")
+async def askb_query(req: ASKBRequest, request: Request) -> ASKBResponse:
+    """ASKB Trader Copilot: natural language query for merchant operators"""
+    from modules.agents.askb_agent import get_askb_copilot
+
+    copilot = get_askb_copilot()
+    try:
+        result = await copilot.process(req.query)
+    except Exception as exc:
+        logger.exception("ASKB query failed: %s", req.query[:80])
+        raise HTTPException(status_code=500, detail="ASKB processing error") from exc
+
+    return ASKBResponse(**result)
+
+
 @app.get("/health")
 async def health_check() -> dict:
     return {"status": "ok", "machine_bound": MachineAuth.get_machine_id()[:8] + "****"}

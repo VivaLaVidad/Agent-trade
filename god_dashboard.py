@@ -46,7 +46,7 @@ import modules.supply_chain.models  # noqa: F401 — 确保 ORM 表注册
 _MONO = "Consolas" if os.name == "nt" else "Menlo"
 _REFRESH_MS = 2000
 
-FeedKind = Literal["success", "bundling", "failed"]
+FeedKind = Literal["success", "bundling", "failed", "external"]
 
 
 @dataclass
@@ -324,6 +324,8 @@ class GodDashboard(QMainWindow):
         self._demo_vol = 128_000.0
         self._demo_fee = 1_280.0
         self._seen_ledger_ids: set[str] = set()
+        self._local_count: int = 0
+        self._remote_count: int = 0
         self._sig = DashboardDataSignal()
         self._sig.loaded.connect(self._on_data)
 
@@ -335,6 +337,32 @@ class GodDashboard(QMainWindow):
 
         self._harvester = HarvesterStrip()
         root.addWidget(self._harvester)
+
+        # Source stats bar
+        source_bar = QFrame()
+        source_bar.setStyleSheet(
+            "QFrame { background-color: #0e1218; border: 1px solid #2a3548; border-radius: 6px; }"
+        )
+        sb_lay = QHBoxLayout(source_bar)
+        sb_lay.setContentsMargins(16, 8, 16, 8)
+        sb_title = QLabel("\u64ae\u5408\u6765\u6e90")  # 撮合来源
+        sb_title.setFont(QFont(_MONO, 10, QFont.Weight.Bold))
+        sb_title.setStyleSheet("color: #7cfc00;")
+        sb_lay.addWidget(sb_title)
+        self._local_label = QLabel("LOCAL: 0")
+        self._local_label.setFont(QFont(_MONO, 11, QFont.Weight.Bold))
+        self._local_label.setStyleSheet("color: #00ccff;")
+        sb_lay.addWidget(self._local_label)
+        self._remote_label = QLabel("REMOTE: 0")
+        self._remote_label.setFont(QFont(_MONO, 11, QFont.Weight.Bold))
+        self._remote_label.setStyleSheet("color: #ff9800;")
+        sb_lay.addWidget(self._remote_label)
+        self._source_pct = QLabel("LOCAL 0% | REMOTE 0%")
+        self._source_pct.setFont(QFont(_MONO, 10))
+        self._source_pct.setStyleSheet("color: #8899aa;")
+        sb_lay.addWidget(self._source_pct)
+        sb_lay.addStretch()
+        root.addWidget(source_bar)
 
         body = QHBoxLayout()
         body.setSpacing(12)
@@ -386,6 +414,8 @@ class GodDashboard(QMainWindow):
             return QColor("#39ff14")  # 亮绿
         if kind == "bundling":
             return QColor("#ff9800")  # 橙
+        if kind == "external":
+            return QColor("#ff5722")  # 红橙（外部撮合）
         return QColor("#b0b0b8")  # 浅灰（失败）
 
     def _append_feed_ui(self, entries: list[FeedEntry]) -> None:
@@ -417,6 +447,19 @@ class GodDashboard(QMainWindow):
             self._roi.push_value(float(p))
         self._merchants.update_merchants(payload.get("merchants", []))
 
+        # Update source stats
+        lc = payload.get("local_count", 0)
+        rc = payload.get("remote_count", 0)
+        if lc or rc:
+            self._local_count += lc
+            self._remote_count += rc
+            total = self._local_count + self._remote_count
+            lp = round(self._local_count / total * 100, 1) if total else 0
+            rp = round(self._remote_count / total * 100, 1) if total else 0
+            self._local_label.setText(f"LOCAL: {self._local_count}")
+            self._remote_label.setText(f"REMOTE: {self._remote_count}")
+            self._source_pct.setText(f"LOCAL {lp}% | REMOTE {rp}%")
+
     def _request_refresh(self) -> None:
         seen = set(self._seen_ledger_ids)
         demo_v, demo_f = self._demo_vol, self._demo_fee
@@ -435,12 +478,25 @@ class GodDashboard(QMainWindow):
             demo_state: tuple[float, float] | None = None
             out_vol, out_fee = vol, fee
 
+            local_c, remote_c = 0, 0
+
             if use_demo:
                 dv, df, entry, roi = _synthetic_tick(demo_v, demo_f)
                 new_entries.append(entry)
                 roi_batch.append(roi)
                 out_vol, out_fee = dv, df
                 demo_state = (dv, df)
+                # Simulate source tracking
+                import random as _src_rnd
+                if _src_rnd.random() < 0.6:
+                    local_c, remote_c = 1, 0
+                else:
+                    local_c, remote_c = 0, 1
+                    new_entries.append(FeedEntry(
+                        _now_hms(),
+                        f"[EXTERNAL-ARBITRAGE] \u5916\u90e8\u8282\u70b9\u5339\u914d\u6210\u529f\uff0c\u5229\u6da6\u6ea2\u4ef7 +{_src_rnd.uniform(3, 12):.1f}%",
+                        "external",
+                    ))
             else:
                 db_new = [e for e in db_feed if e.source_id not in seen]
                 new_entries.extend(db_new)
@@ -462,6 +518,8 @@ class GodDashboard(QMainWindow):
                     "roi": roi_batch,
                     "merchants": mers,
                     "demo_state": demo_state,
+                    "local_count": local_c if use_demo else 0,
+                    "remote_count": remote_c if use_demo else 0,
                 },
             )
 

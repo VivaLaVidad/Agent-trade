@@ -261,3 +261,162 @@ def test_matching_graph_compiles_with_procurement() -> None:
     from modules.supply_chain.matching_graph import build_matching_graph
     graph = build_matching_graph()
     assert graph is not None
+
+
+# ═══════════════════════════════════════════════════════════════
+#  Local-First Inventory Tests
+# ═══════════════════════════════════════════════════════════════
+
+def test_mock_inventory_has_50_skus() -> None:
+    """MockInventory preloaded with exactly 50 SKUs"""
+    from database.mock_inventory import MockInventory
+    inv = MockInventory()
+    assert inv.size == 50
+
+
+def test_mock_inventory_query_capacitor() -> None:
+    """MockInventory query finds capacitors by keyword"""
+    from database.mock_inventory import MockInventory
+    inv = MockInventory()
+    hits = inv.query("100nF", qty=1, category="capacitor")
+    assert len(hits) >= 1
+    assert hits[0]["sku_name"] == "100nF MLCC 0402"
+    assert hits[0]["profit_margin_pct"] > 0
+
+
+def test_mock_inventory_query_no_match() -> None:
+    """MockInventory returns empty for non-existent SKU"""
+    from database.mock_inventory import MockInventory
+    inv = MockInventory()
+    hits = inv.query("quantum_flux_capacitor_9999", qty=1)
+    assert hits == []
+
+
+def test_mock_inventory_remove_and_fallback() -> None:
+    """Remove SKU -> query returns empty -> triggers scatter fallback"""
+    from database.mock_inventory import MockInventory, InventoryItem
+    inv = MockInventory()
+
+    # First: query should find it
+    hits = inv.query("STM32", qty=1, category="mcu")
+    assert len(hits) >= 1
+    found_id = hits[0]["sku_id"]
+
+    # Remove it
+    removed = inv.remove_sku(found_id)
+    assert removed is True
+
+    # Now query with exact sku_id should return empty
+    hits2 = inv.query(found_id, qty=1)
+    assert hits2 == []
+
+
+def test_local_inventory_node_local_hit() -> None:
+    """LocalInventoryNode returns LOCAL_INVENTORY when profitable SKU found"""
+    from modules.supply_chain.matching_graph import local_inventory_node
+
+    state = {
+        "structured_demand": {
+            "category": "capacitor",
+            "product_keywords": "100nF",
+            "quantity": 100,
+        },
+        "status": "demand_parsed",
+    }
+    result = local_inventory_node(state)
+    assert result["source_type"] == "LOCAL_INVENTORY"
+    assert result["status"] == "candidates_found"
+    assert len(result["candidates"]) >= 1
+    assert result["candidates"][0]["source"] == "local_inventory"
+
+
+def test_local_inventory_node_no_match_triggers_remote() -> None:
+    """LocalInventoryNode returns REMOTE_ARBITRAGE when no local match"""
+    from modules.supply_chain.matching_graph import local_inventory_node
+
+    state = {
+        "structured_demand": {
+            "category": "exotic_material",
+            "product_keywords": "unobtanium_alloy",
+            "quantity": 1,
+        },
+        "status": "demand_parsed",
+    }
+    result = local_inventory_node(state)
+    assert result["source_type"] == "REMOTE_ARBITRAGE"
+    assert result["status"] == "no_local_inventory"
+    assert result["candidates"] == []
+
+
+def test_scatter_node_returns_external_quotes() -> None:
+    """ScatterNode broadcasts A2A and returns REMOTE_ARBITRAGE quotes"""
+    from modules.supply_chain.matching_graph import scatter_node
+
+    state = {
+        "structured_demand": {
+            "category": "capacitor",
+            "product_keywords": "100nF MLCC",
+            "quantity": 500,
+        },
+        "status": "no_local_inventory",
+    }
+    result = scatter_node(state)
+    assert result["source_type"] == "REMOTE_ARBITRAGE"
+    assert result["status"] == "candidates_found"
+    assert len(result["candidates"]) == 3  # 3 external nodes
+    assert len(result["scatter_quotes"]) == 3
+    for c in result["candidates"]:
+        assert c["source"] == "a2a_external"
+        assert c["profit_margin_pct"] > 0
+
+
+def test_local_first_full_flow_local_hit() -> None:
+    """Full flow: local inventory hit -> source_type=LOCAL_INVENTORY -> skip scatter"""
+    from modules.supply_chain.matching_graph import local_inventory_node, scatter_node
+
+    # Step 1: local_inventory_node finds match
+    state = {
+        "structured_demand": {
+            "category": "mcu",
+            "product_keywords": "STM32",
+            "quantity": 10,
+        },
+    }
+    result = local_inventory_node(state)
+    assert result["source_type"] == "LOCAL_INVENTORY"
+    assert result["status"] == "candidates_found"
+    # Scatter should NOT be called in this path
+
+
+def test_local_first_full_flow_scatter_fallback() -> None:
+    """Full flow: no local match -> scatter_node -> REMOTE_ARBITRAGE"""
+    from modules.supply_chain.matching_graph import local_inventory_node, scatter_node
+
+    # Step 1: local_inventory_node finds nothing
+    state = {
+        "structured_demand": {
+            "category": "exotic",
+            "product_keywords": "nonexistent_part",
+            "quantity": 1,
+        },
+    }
+    result1 = local_inventory_node(state)
+    assert result1["source_type"] == "REMOTE_ARBITRAGE"
+    assert result1["status"] == "no_local_inventory"
+
+    # Step 2: scatter_node collects external quotes
+    state.update(result1)
+    result2 = scatter_node(state)
+    assert result2["source_type"] == "REMOTE_ARBITRAGE"
+    assert result2["status"] == "candidates_found"
+    assert len(result2["candidates"]) > 0
+
+
+def test_matching_graph_has_local_inventory_and_scatter_nodes() -> None:
+    """matching_graph includes local_inventory_node and scatter_node"""
+    from modules.supply_chain.matching_graph import build_matching_graph
+    graph = build_matching_graph()
+    assert graph is not None
+    node_names = [n.name if hasattr(n, "name") else str(n) for n in graph.get_graph().nodes]
+    assert "local_inventory_node" in node_names
+    assert "scatter_node" in node_names

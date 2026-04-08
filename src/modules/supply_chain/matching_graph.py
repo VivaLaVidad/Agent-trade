@@ -46,6 +46,8 @@ class MatchState(TypedDict, total=False):
     risk_alerts: list[str]
     reg_guard_result: dict[str, Any]  # RegGuard 出口管制检查结果
     scout_result: dict[str, Any]     # SupplyChainScout 动态寻价结果
+    source_type: str                 # LOCAL_INVENTORY | REMOTE_ARBITRAGE
+    scatter_quotes: list[dict[str, Any]]  # A2A protocol quotes
     negotiation_result: dict[str, Any]
     tiered_quotes: list[dict[str, Any]]
     negotiation_status: str          # pending / counter_offer / accepted / rejected
@@ -58,6 +60,183 @@ class MatchState(TypedDict, total=False):
     procurement_result: dict[str, Any]  # Buy-side 采购对冲结果
     status: str
     error: str
+
+
+_LOCAL_PROFIT_THRESHOLD = 5.0  # Local inventory min profit margin %
+
+
+def local_inventory_node(state: MatchState) -> dict[str, Any]:
+    """LocalInventoryNode: query MockInventory, skip external if profit > 5%"""
+    from database.mock_inventory import get_mock_inventory
+
+    demand = state.get("structured_demand", {})
+    category = demand.get("category", "")
+    product_kw = demand.get("product_keywords", demand.get("product", category))
+    qty = demand.get("quantity", 1)
+
+    inventory = get_mock_inventory()
+    hits = inventory.query(sku_name=product_kw or category, qty=qty, category=category)
+
+    if not hits:
+        logger.info("[LocalInventory] No local match for %s -> scatter", product_kw)
+        return {
+            "source_type": "REMOTE_ARBITRAGE",
+            "candidates": [],
+            "status": "no_local_inventory",
+        }
+
+    profitable = [h for h in hits if h.get("profit_margin_pct", 0) > _LOCAL_PROFIT_THRESHOLD]
+    if not profitable:
+        logger.info("[LocalInventory] Local hits but margin < %.1f%% -> scatter", _LOCAL_PROFIT_THRESHOLD)
+        return {
+            "source_type": "REMOTE_ARBITRAGE",
+            "candidates": [],
+            "status": "no_local_inventory",
+        }
+
+    candidates = []
+    for h in profitable[:5]:
+        candidates.append({
+            "sku_id": h["sku_id"],
+            "sku_name": h["sku_name"],
+            "category": h["category"],
+            "supplier_name": f"Local-{h['location']}",
+            "unit_price_rmb": round(h["cost_price"] * 7.2, 2),
+            "stock_qty": h["stock_qty"],
+            "certifications": [],
+            "match_score": 95,
+            "specs": h.get("specs", {}),
+            "source": "local_inventory",
+            "cost_price_usd": h["cost_price"],
+            "suggested_sell_price_usd": h["suggested_sell_price"],
+            "profit_margin_pct": h["profit_margin_pct"],
+        })
+
+    logger.info("[LocalInventory] Found %d profitable SKUs (source=LOCAL_INVENTORY)", len(candidates))
+    return {
+        "source_type": "LOCAL_INVENTORY",
+        "candidates": candidates,
+        "status": "candidates_found",
+    }
+
+
+def scatter_node(state: MatchState) -> dict[str, Any]:
+    """ScatterNode: A2A protocol broadcast to external nodes, collect quotes
+
+    2026 A2A Standard: structured handshake with AgentCard + A2APayload validation.
+    Missing sell_side_transaction_id triggers TransactionContextMissing.
+    """
+    import asyncio
+    from decimal import Decimal
+
+    from models.a2a_protocol import A2APayload, AgentCard, TurnStatus
+
+    demand = state.get("structured_demand", {})
+    category = demand.get("category", "")
+    product_kw = demand.get("product_keywords", demand.get("product", category))
+    qty = demand.get("quantity", 1)
+    txn_id = state.get("sell_side_transaction_id", "")
+
+    logger.info("[ScatterNode] A2A broadcast: %s qty=%d txn=%s", product_kw, qty, txn_id[:16] if txn_id else "N/A")
+
+    async def _a2a_broadcast():
+        import random as _rnd
+        external_nodes = [
+            AgentCard(agent_id="ext-shenzhen-01", capabilities=["quote", "negotiate"], endpoint="a2a://sz-01.claw.internal"),
+            AgentCard(agent_id="ext-guangzhou-02", capabilities=["quote"], endpoint="a2a://gz-02.claw.internal"),
+            AgentCard(agent_id="ext-shanghai-03", capabilities=["quote", "hedge"], endpoint="a2a://sh-03.claw.internal"),
+        ]
+        latencies = {"ext-shenzhen-01": 0.8, "ext-guangzhou-02": 1.2, "ext-shanghai-03": 1.5}
+
+        async def _query_node(card: AgentCard) -> A2APayload:
+            await asyncio.sleep(latencies.get(card.agent_id, 1.0))
+            base_price = _rnd.uniform(0.05, 2.0)
+            margin = _rnd.uniform(3.0, 15.0)
+            return A2APayload(
+                agent_card=card,
+                negotiation_round=0,
+                turn_status=TurnStatus.OFFER,
+                proposed_price=Decimal(str(round(base_price, 4))),
+                moq=max(qty, 100),
+                sell_side_transaction_id=txn_id or f"scatter-auto-{_rnd.randint(10000, 99999)}",
+                sku_name=product_kw or category,
+                available_qty=_rnd.randint(1000, 50000),
+                profit_margin_pct=round(margin, 1),
+            )
+
+        return list(await asyncio.gather(*[_query_node(c) for c in external_nodes]))
+
+    loop = asyncio.new_event_loop()
+    try:
+        payloads: list[A2APayload] = loop.run_until_complete(
+            asyncio.wait_for(_a2a_broadcast(), timeout=5.0)
+        )
+    except asyncio.TimeoutError:
+        payloads = []
+    finally:
+        loop.close()
+
+    if not payloads:
+        logger.warning("[ScatterNode] No A2A responses received")
+        return {
+            "source_type": "REMOTE_ARBITRAGE",
+            "scatter_quotes": [],
+            "candidates": [],
+            "status": "no_candidates",
+            "error": "External agents did not respond",
+        }
+
+    # Validate A2A payloads — reject missing txn_id
+    from agents.procurement_graph import TransactionContextMissing
+    validated: list[A2APayload] = []
+    for p in payloads:
+        if not p.sell_side_transaction_id or not p.sell_side_transaction_id.strip():
+            raise TransactionContextMissing(
+                f"A2A payload from {p.agent_card.agent_id} missing sell_side_transaction_id"
+            )
+        validated.append(p)
+
+    # Convert validated A2APayloads to candidate format
+    quotes_raw = []
+    candidates = []
+    for p in sorted(validated, key=lambda x: float(x.proposed_price)):
+        region = p.agent_card.agent_id.split("-")[1] if "-" in p.agent_card.agent_id else "XX"
+        price_f = float(p.proposed_price)
+        quotes_raw.append({
+            "node_id": p.agent_card.agent_id,
+            "region": region.upper(),
+            "sku_name": p.sku_name,
+            "unit_price_usd": price_f,
+            "suggested_sell_usd": round(price_f * (1 + p.profit_margin_pct / 100), 4),
+            "available_qty": p.available_qty,
+            "profit_margin_pct": p.profit_margin_pct,
+            "negotiation_round": p.negotiation_round,
+            "turn_status": p.turn_status.value,
+            "sell_side_transaction_id": p.sell_side_transaction_id,
+        })
+        candidates.append({
+            "sku_id": f"ext-{p.agent_card.agent_id}-{p.sku_name[:12]}".replace(" ", "_"),
+            "sku_name": p.sku_name,
+            "category": category,
+            "supplier_name": f"External-{region.upper()}",
+            "unit_price_rmb": round(price_f * 7.2, 2),
+            "stock_qty": p.available_qty,
+            "certifications": [],
+            "match_score": 75,
+            "specs": {},
+            "source": "a2a_external",
+            "cost_price_usd": price_f,
+            "suggested_sell_price_usd": round(price_f * (1 + p.profit_margin_pct / 100), 4),
+            "profit_margin_pct": p.profit_margin_pct,
+        })
+
+    logger.info("[ScatterNode] A2A validated %d payloads (source=REMOTE_ARBITRAGE)", len(candidates))
+    return {
+        "source_type": "REMOTE_ARBITRAGE",
+        "scatter_quotes": quotes_raw,
+        "candidates": candidates,
+        "status": "candidates_found",
+    }
 
 
 def demand_node(state: MatchState) -> dict[str, Any]:
@@ -839,6 +1018,8 @@ def build_matching_graph():
 
     graph.add_node("demand_node", demand_node)
     graph.add_node("reg_guard_node", reg_guard_node)
+    graph.add_node("local_inventory_node", local_inventory_node)
+    graph.add_node("scatter_node", scatter_node)
     graph.add_node("supply_node", supply_node)
     graph.add_node("supply_scout_node", supply_scout_node)
     graph.add_node("risk_defense_node", risk_defense_node)
@@ -862,7 +1043,34 @@ def build_matching_graph():
     graph.add_conditional_edges(
         "reg_guard_node",
         lambda s: "search" if s.get("status") != "reg_denied" else "finish",
-        {"search": "supply_node", "finish": END},
+        {"search": "local_inventory_node", "finish": END},
+    )
+
+
+    # local_inventory -> risk_defense (LOCAL hit) | scatter (no local) | END
+    def _route_after_local_inventory(s: MatchState) -> str:
+        if s.get("status") == "candidates_found" and s.get("source_type") == "LOCAL_INVENTORY":
+            return "defend"
+        if s.get("status") == "no_local_inventory":
+            return "scatter"
+        return "finish"
+
+    graph.add_conditional_edges(
+        "local_inventory_node",
+        _route_after_local_inventory,
+        {"defend": "risk_defense_node", "scatter": "scatter_node", "finish": END},
+    )
+
+    # scatter -> supply_node (fallback) | risk_defense (got quotes) | END
+    def _route_after_scatter(s: MatchState) -> str:
+        if s.get("status") == "candidates_found":
+            return "defend"
+        return "supply_fallback"
+
+    graph.add_conditional_edges(
+        "scatter_node",
+        _route_after_scatter,
+        {"defend": "risk_defense_node", "supply_fallback": "supply_node"},
     )
 
     # supply → risk_defense (有候选) | scout (无候选) | END (降级失败)
