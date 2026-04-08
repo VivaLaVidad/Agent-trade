@@ -23,6 +23,8 @@ class InventoryItem:
     suggested_sell_price: float # 建议售价 USD
     location: str
     specs: dict = field(default_factory=dict)
+    is_un_certified: bool = True
+    is_rcep_eligible: bool = True
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -159,6 +161,8 @@ class MockInventory:
                 "profit_margin_pct": round(
                     (r.suggested_sell_price - r.cost_price) / r.cost_price * 100, 1
                 ),
+                "is_un_certified": r.is_un_certified,
+                "is_rcep_eligible": r.is_rcep_eligible,
             }
             for r in results
         ]

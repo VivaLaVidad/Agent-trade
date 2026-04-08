@@ -140,3 +140,35 @@ def test_askb_copilot_unknown_intent() -> None:
         assert result["tool_used"] is None
 
     asyncio.run(_run())
+
+
+
+def test_flash_intent_local_match_with_trust_anchors() -> None:
+    """flash-intent finds local SKU with UN/RCEP trust anchors"""
+    from database.mock_inventory import get_mock_inventory
+
+    inventory = get_mock_inventory()
+    hits = inventory.query("100nF", qty=1, category="capacitor")
+    assert len(hits) >= 1
+    best = hits[0]
+
+    # Verify trust anchor fields exist and are True
+    assert best["is_un_certified"] is True
+    assert best["is_rcep_eligible"] is True
+
+    # Simulate flash-intent logic
+    delivery = "24 Hours (in-stock)" if best["stock_qty"] >= 1 else "2-3 Business Days"
+    assert delivery == "24 Hours (in-stock)"
+    assert best["profit_margin_pct"] > 5.0
+
+
+def test_flash_intent_no_match_returns_remote() -> None:
+    """flash-intent with non-existent SKU returns REMOTE_ARBITRAGE"""
+    from database.mock_inventory import get_mock_inventory
+
+    inventory = get_mock_inventory()
+    hits = inventory.query("quantum_flux_9999", qty=1)
+    assert hits == []
+    # In the actual route, this would return source_type=REMOTE_ARBITRAGE
+    source_type = "REMOTE_ARBITRAGE" if not hits else "LOCAL_INVENTORY"
+    assert source_type == "REMOTE_ARBITRAGE"

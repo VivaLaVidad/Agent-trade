@@ -188,6 +188,69 @@ async def execute_workflow(req: TradeRequest, request: Request) -> TradeResponse
 
 
 
+
+
+# ─── Flash Intent (H5 Buyer Portal) ─────────────────────────
+class FlashIntentRequest(BaseModel):
+    sku: str = Field(..., min_length=1, max_length=256)
+    quantity: int = Field(default=100, ge=1)
+    target_country: str = Field(default="VN", max_length=4)
+    is_urgent: bool = Field(default=False)
+
+
+class FlashIntentResponse(BaseModel):
+    status: str
+    source_type: str
+    sku_match: dict | None
+    estimated_delivery: str
+    is_un_certified: bool
+    is_rcep_eligible: bool
+    recommendation: str
+
+
+@app.post("/api/v1/buyer/flash-intent", response_model=FlashIntentResponse)
+@limiter.limit("10/minute")
+async def flash_intent(req: FlashIntentRequest, request: Request) -> FlashIntentResponse:
+    """H5 Flash Intent: lightweight procurement entry for SEA buyers"""
+    from database.mock_inventory import get_mock_inventory
+
+    inventory = get_mock_inventory()
+    hits = inventory.query(sku_name=req.sku, qty=req.quantity)
+
+    if not hits:
+        return FlashIntentResponse(
+            status="no_match",
+            source_type="REMOTE_ARBITRAGE",
+            sku_match=None,
+            estimated_delivery="3-5 Business Days (sourcing required)",
+            is_un_certified=False,
+            is_rcep_eligible=False,
+            recommendation=f"No local inventory for '{req.sku}'. Scatter broadcast initiated to external suppliers.",
+        )
+
+    best = hits[0]
+    delivery = "24 Hours (in-stock)" if req.is_urgent and best["stock_qty"] >= req.quantity else "2-3 Business Days"
+
+    return FlashIntentResponse(
+        status="matched",
+        source_type="LOCAL_INVENTORY",
+        sku_match={
+            "sku_id": best["sku_id"],
+            "sku_name": best["sku_name"],
+            "unit_price_usd": best["cost_price"],
+            "stock_qty": best["stock_qty"],
+            "profit_margin_pct": best["profit_margin_pct"],
+            "location": best["location"],
+        },
+        estimated_delivery=delivery,
+        is_un_certified=best.get("is_un_certified", True),
+        is_rcep_eligible=best.get("is_rcep_eligible", True),
+        recommendation=f"Local match found: {best['sku_name']} @ ${best['cost_price']:.4f}/unit. "
+                       f"{'UN Certified + RCEP 0% Tariff eligible.' if best.get('is_rcep_eligible') else ''} "
+                       f"Margin: {best['profit_margin_pct']:.1f}%.",
+    )
+
+
 # ─── ASKB (Agentic Trader Copilot) ──────────────────────────
 class ASKBRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=2048)

@@ -110,6 +110,8 @@ def local_inventory_node(state: MatchState) -> dict[str, Any]:
             "cost_price_usd": h["cost_price"],
             "suggested_sell_price_usd": h["suggested_sell_price"],
             "profit_margin_pct": h["profit_margin_pct"],
+            "is_un_certified": h.get("is_un_certified", True),
+            "is_rcep_eligible": h.get("is_rcep_eligible", True),
         })
 
     logger.info("[LocalInventory] Found %d profitable SKUs (source=LOCAL_INVENTORY)", len(candidates))
