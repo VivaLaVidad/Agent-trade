@@ -190,6 +190,163 @@ async def execute_workflow(req: TradeRequest, request: Request) -> TradeResponse
 
 
 
+
+
+# ─── Buyer Inquire (Graph Suspension) ────────────────────────
+class InquireRequest(BaseModel):
+    query: str = Field(..., min_length=1, max_length=2048)
+    target: str = Field(default="VN", max_length=4)
+    quantity: int = Field(default=100, ge=1)
+
+
+class InquireResponse(BaseModel):
+    thread_id: str
+    status: str
+    source_type: str
+    candidates: list[dict]
+    sell_side_transaction_id: str
+
+
+@app.post("/api/v1/buyer/inquire", response_model=InquireResponse)
+@limiter.limit("10/minute")
+async def buyer_inquire(req: InquireRequest, request: Request) -> InquireResponse:
+    """C-side inquiry: init matching graph, run to sourcing pause, return candidates"""
+    import uuid
+    from modules.supply_chain.matching_graph import build_matching_graph
+
+    thread_id = str(uuid.uuid4())
+    txn_id = f"TXN-{thread_id[:8].upper()}"
+
+    # Build a fresh graph for this inquiry (with interrupt_before)
+    graph = build_matching_graph()
+
+    config = {"configurable": {"thread_id": thread_id}}
+    initial_state = {
+        "raw_input": req.query,
+        "sell_side_transaction_id": txn_id,
+    }
+
+    try:
+        # Graph will pause at interrupt_before=["risk_defense_node"]
+        result = await graph.ainvoke(initial_state, config=config)
+    except Exception:
+        # Graph interrupted (expected) — read current state
+        try:
+            snapshot = await graph.aget_state(config)
+            result = dict(snapshot.values) if snapshot and snapshot.values else {}
+        except Exception:
+            result = {}
+
+    candidates = result.get("candidates", [])
+    source_type = result.get("source_type", "UNKNOWN")
+
+    return InquireResponse(
+        thread_id=thread_id,
+        status="awaiting_confirmation" if candidates else "no_candidates",
+        source_type=source_type,
+        candidates=candidates[:5],
+        sell_side_transaction_id=txn_id,
+    )
+
+
+class ConfirmTradeRequest(BaseModel):
+    thread_id: str = Field(..., min_length=1)
+    selected_quote_id: str = Field(default="")
+    sell_side_transaction_id: str = Field(default="")
+
+
+class ConfirmTradeResponse(BaseModel):
+    status: str
+    thread_id: str
+    message: str
+
+
+@app.post("/api/v1/buyer/confirm-trade", response_model=ConfirmTradeResponse)
+@limiter.limit("5/minute")
+async def buyer_confirm_trade(req: ConfirmTradeRequest, request: Request) -> ConfirmTradeResponse:
+    """C-side confirmation: resume suspended graph, execute to END, publish event"""
+    from modules.supply_chain.matching_graph import build_matching_graph
+    from core.ticker_plant import get_market_bus, MarketEvent, EventType
+
+    graph = build_matching_graph()
+    config = {"configurable": {"thread_id": req.thread_id}}
+
+    try:
+        # Resume graph with buyer confirmation injected
+        resume_state = {
+            "buyer_confirmation": {"selected_quote_id": req.selected_quote_id},
+        }
+        result = await graph.ainvoke(resume_state, config=config)
+
+        # Publish NEW_TRADE_EXECUTED event
+        bus = get_market_bus()
+        event = MarketEvent(
+            event_type=EventType.NEW_TRADE_EXECUTED,
+            ticker_id=f"CLAW-TRADE-{req.thread_id[:8].upper()}",
+            data={
+                "thread_id": req.thread_id,
+                "sell_side_transaction_id": req.sell_side_transaction_id,
+                "status": result.get("status", "completed"),
+                "selected_quote_id": req.selected_quote_id,
+            },
+        )
+        await bus.publish(event)
+
+        return ConfirmTradeResponse(
+            status="trade_executed",
+            thread_id=req.thread_id,
+            message="Order confirmed. PI generated with SHA-256 hash. Merchant notified.",
+        )
+    except Exception as exc:
+        logger.exception("confirm-trade failed: thread=%s", req.thread_id)
+        return ConfirmTradeResponse(
+            status="error",
+            thread_id=req.thread_id,
+            message=f"Trade confirmation failed: {str(exc)[:200]}",
+        )
+
+
+# ─── Merchant SSE Stream ────────────────────────────────────
+from starlette.responses import StreamingResponse
+import asyncio as _sse_asyncio
+
+
+@app.get("/api/v1/merchant/stream")
+async def merchant_sse_stream(request: Request):
+    """B-side SSE: subscribe to NEW_TRADE_EXECUTED events via MarketDataBus"""
+    from core.ticker_plant import get_market_bus, EventType
+
+    bus = get_market_bus()
+    event_queue: _sse_asyncio.Queue = _sse_asyncio.Queue()
+
+    async def _on_trade(event):
+        if event.event_type == EventType.NEW_TRADE_EXECUTED:
+            await event_queue.put(event)
+
+    bus.subscribe("CLAW-TRADE-*", _on_trade)
+
+    async def _generate():
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await _sse_asyncio.wait_for(event_queue.get(), timeout=30.0)
+                    import json
+                    data = json.dumps(event.to_dict(), default=str)
+                    yield f"event: new_trade\ndata: {data}\n\n"
+                except _sse_asyncio.TimeoutError:
+                    yield f": keepalive\n\n"
+        finally:
+            bus.unsubscribe("CLAW-TRADE-*", _on_trade)
+
+    return StreamingResponse(
+        _generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 # ─── Flash Intent (H5 Buyer Portal) ─────────────────────────
 class FlashIntentRequest(BaseModel):
     sku: str = Field(..., min_length=1, max_length=256)

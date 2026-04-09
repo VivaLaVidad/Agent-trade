@@ -266,6 +266,7 @@ class EventType(str, Enum):
     DOCUMENT_GENERATED = "document_generated"
     HEDGE_LOCKED = "hedge_locked"
     PENDING_REVIEW = "pending_review"
+    NEW_TRADE_EXECUTED = "new_trade_executed"
 
 
 @dataclass

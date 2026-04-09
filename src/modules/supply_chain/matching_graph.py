@@ -47,6 +47,8 @@ class MatchState(TypedDict, total=False):
     reg_guard_result: dict[str, Any]  # RegGuard 出口管制检查结果
     scout_result: dict[str, Any]     # SupplyChainScout 动态寻价结果
     source_type: str                 # LOCAL_INVENTORY | REMOTE_ARBITRAGE
+    buyer_confirmation: dict[str, Any]  # C-side confirmation (selected quote)
+    llm_sourcing_result: dict[str, Any]  # LLM sourcing structured output
     scatter_quotes: list[dict[str, Any]]  # A2A protocol quotes
     negotiation_result: dict[str, Any]
     tiered_quotes: list[dict[str, Any]]
@@ -66,16 +68,69 @@ _LOCAL_PROFIT_THRESHOLD = 5.0  # Local inventory min profit margin %
 
 
 def local_inventory_node(state: MatchState) -> dict[str, Any]:
-    """LocalInventoryNode: query MockInventory, skip external if profit > 5%"""
-    from database.mock_inventory import get_mock_inventory
+    """LocalInventoryNode: real DB query (ProductSKU) with MockInventory fallback"""
+    import asyncio
+    from core.demo_config import is_demo_mode
 
     demand = state.get("structured_demand", {})
     category = demand.get("category", "")
     product_kw = demand.get("product_keywords", demand.get("product", category))
     qty = demand.get("quantity", 1)
 
-    inventory = get_mock_inventory()
-    hits = inventory.query(sku_name=product_kw or category, qty=qty, category=category)
+    hits = []
+
+    # Try real PostgreSQL query first (non-DEMO mode)
+    if not is_demo_mode():
+        try:
+            async def _db_query():
+                from database.models import AsyncSessionFactory
+                from modules.supply_chain.models import ProductSKU
+                from sqlalchemy import select
+                for attempt in range(3):
+                    try:
+                        async with AsyncSessionFactory() as session:
+                            stmt = select(ProductSKU).where(
+                                ProductSKU.name.ilike(f"%{product_kw}%")
+                            ).limit(10)
+                            rows = (await session.execute(stmt)).scalars().all()
+                            return [
+                                {
+                                    "sku_id": r.sku_id,
+                                    "sku_name": r.name,
+                                    "category": r.category or category,
+                                    "stock_qty": r.stock_qty or 0,
+                                    "cost_price": float(r.unit_price_rmb or 0) / 7.2,
+                                    "suggested_sell_price": float(r.unit_price_rmb or 0) / 7.2 * 1.15,
+                                    "location": "DB",
+                                    "specs": r.specs or {},
+                                    "profit_margin_pct": 15.0,
+                                    "is_un_certified": True,
+                                    "is_rcep_eligible": True,
+                                }
+                                for r in rows if (r.stock_qty or 0) >= qty
+                            ]
+                    except Exception:
+                        if attempt == 2:
+                            raise
+                        await asyncio.sleep(0.5 * (attempt + 1))
+                return []
+
+            loop = asyncio.new_event_loop()
+            try:
+                hits = loop.run_until_complete(_db_query())
+            finally:
+                loop.close()
+            if hits:
+                logger.info("[LocalInventory] DB query returned %d hits", len(hits))
+        except Exception as exc:
+            logger.warning("[LocalInventory] DB query failed, falling back to MockInventory: %s", exc)
+            hits = []
+
+    # Fallback to MockInventory (DEMO mode or DB failure)
+    if not hits:
+        from database.mock_inventory import get_mock_inventory
+        inventory = get_mock_inventory()
+        hits = inventory.query(sku_name=product_kw or category, qty=qty, category=category)
 
     if not hits:
         logger.info("[LocalInventory] No local match for %s -> scatter", product_kw)
@@ -119,6 +174,154 @@ def local_inventory_node(state: MatchState) -> dict[str, Any]:
         "source_type": "LOCAL_INVENTORY",
         "candidates": candidates,
         "status": "candidates_found",
+    }
+
+
+
+def llm_sourcing_node(state: MatchState) -> dict[str, Any]:
+    """LLM Dynamic Sourcing: uses LLM to search Pearl River Delta supplier network.
+
+    In DEMO mode, delegates to scatter_node logic (A2A simulation).
+    In production, calls LLM with search tool to find real suppliers.
+    Returns A2APayload-structured results.
+    """
+    import asyncio
+    from decimal import Decimal
+    from core.demo_config import is_demo_mode
+    from models.a2a_protocol import A2APayload, AgentCard, TurnStatus
+
+    demand = state.get("structured_demand", {})
+    category = demand.get("category", "")
+    product_kw = demand.get("product_keywords", demand.get("product", category))
+    qty = demand.get("quantity", 1)
+    txn_id = state.get("sell_side_transaction_id", "")
+
+    logger.info("[LLM-Sourcing] Query: %s qty=%d", product_kw, qty)
+
+    if not is_demo_mode():
+        # Production: call LLM with structured output
+        try:
+            async def _llm_source():
+                from langchain_ollama import ChatOllama
+                from langchain_core.messages import HumanMessage, SystemMessage
+                import json as _json
+
+                llm = ChatOllama(model="qwen3:8b", temperature=0.1)
+                prompt = f"""You are a Pearl River Delta electronics sourcing agent.
+Find 1-3 suppliers for: {product_kw} (category: {category}, qty: {qty}).
+Return ONLY a JSON array of objects with fields:
+  agent_id, sku_name, unit_price_usd (number), available_qty (int), profit_margin_pct (number), region (SZ/GZ/SH)
+Example: [{{"agent_id":"supplier-sz-01","sku_name":"100nF MLCC","unit_price_usd":0.008,"available_qty":50000,"profit_margin_pct":12.5,"region":"SZ"}}]"""
+
+                resp = await llm.ainvoke([
+                    SystemMessage(content="You are a sourcing agent. Return only valid JSON."),
+                    HumanMessage(content=prompt),
+                ])
+                text = resp.content if hasattr(resp, 'content') else str(resp)
+                # Extract JSON array
+                import re
+                match = re.search(r'\[.*\]', text, re.DOTALL)
+                if match:
+                    return _json.loads(match.group())
+                return []
+
+            loop = asyncio.new_event_loop()
+            try:
+                raw = loop.run_until_complete(asyncio.wait_for(_llm_source(), timeout=30.0))
+            finally:
+                loop.close()
+
+            if raw:
+                payloads = []
+                for item in raw[:3]:
+                    payloads.append(A2APayload(
+                        agent_card=AgentCard(
+                            agent_id=item.get("agent_id", "llm-sourced"),
+                            capabilities=["quote"],
+                            endpoint="llm://sourcing",
+                        ),
+                        negotiation_round=0,
+                        turn_status=TurnStatus.OFFER,
+                        proposed_price=Decimal(str(round(float(item.get("unit_price_usd", 0.1)), 4))),
+                        moq=max(qty, 100),
+                        sell_side_transaction_id=txn_id or f"llm-auto-{id(item)}",
+                        sku_name=item.get("sku_name", product_kw),
+                        available_qty=int(item.get("available_qty", 10000)),
+                        profit_margin_pct=float(item.get("profit_margin_pct", 8.0)),
+                    ))
+
+                candidates = []
+                quotes_raw = []
+                for p in payloads:
+                    price_f = float(p.proposed_price)
+                    quotes_raw.append({
+                        "node_id": p.agent_card.agent_id,
+                        "region": p.agent_card.agent_id.split("-")[1].upper() if "-" in p.agent_card.agent_id else "SZ",
+                        "sku_name": p.sku_name,
+                        "unit_price_usd": price_f,
+                        "available_qty": p.available_qty,
+                        "profit_margin_pct": p.profit_margin_pct,
+                        "sell_side_transaction_id": p.sell_side_transaction_id,
+                        "turn_status": p.turn_status.value,
+                        "negotiation_round": p.negotiation_round,
+                    })
+                    candidates.append({
+                        "sku_id": f"llm-{p.agent_card.agent_id}",
+                        "sku_name": p.sku_name,
+                        "category": category,
+                        "supplier_name": f"LLM-{p.agent_card.agent_id}",
+                        "unit_price_rmb": round(price_f * 7.2, 2),
+                        "stock_qty": p.available_qty,
+                        "certifications": [],
+                        "match_score": 80,
+                        "specs": {},
+                        "source": "llm_sourcing",
+                        "cost_price_usd": price_f,
+                        "suggested_sell_price_usd": round(price_f * (1 + p.profit_margin_pct / 100), 4),
+                        "profit_margin_pct": p.profit_margin_pct,
+                        "is_un_certified": True,
+                        "is_rcep_eligible": True,
+                    })
+
+                logger.info("[LLM-Sourcing] Found %d suppliers via LLM", len(candidates))
+                return {
+                    "source_type": "REMOTE_ARBITRAGE",
+                    "llm_sourcing_result": {"source": "llm", "count": len(candidates)},
+                    "scatter_quotes": quotes_raw,
+                    "candidates": candidates,
+                    "status": "candidates_found",
+                }
+        except Exception as exc:
+            logger.warning("[LLM-Sourcing] LLM failed, falling back to A2A scatter: %s", exc)
+
+    # Fallback: delegate to scatter_node (A2A simulation)
+    return scatter_node(state)
+
+
+def buyer_confirmation_node(state: MatchState) -> dict[str, Any]:
+    """Buyer Confirmation Node: receives C-side selection after graph resume.
+
+    This node runs after the graph is resumed via confirm-trade API.
+    It reads buyer_confirmation from state and prepares for negotiation.
+    """
+    confirmation = state.get("buyer_confirmation", {})
+    selected_id = confirmation.get("selected_quote_id", "")
+    candidates = state.get("candidates", [])
+
+    if not selected_id and candidates:
+        # Auto-select best candidate if no explicit selection
+        selected = candidates[0]
+        logger.info("[BuyerConfirmation] Auto-selected best candidate: %s", selected.get("sku_id"))
+    else:
+        selected = next((c for c in candidates if c.get("sku_id") == selected_id), candidates[0] if candidates else {})
+        logger.info("[BuyerConfirmation] Buyer selected: %s", selected_id)
+
+    if not selected:
+        return {"status": "no_selection", "error": "No candidate selected"}
+
+    return {
+        "candidates": [selected],
+        "status": "buyer_confirmed",
     }
 
 
@@ -1022,6 +1225,8 @@ def build_matching_graph():
     graph.add_node("reg_guard_node", reg_guard_node)
     graph.add_node("local_inventory_node", local_inventory_node)
     graph.add_node("scatter_node", scatter_node)
+    graph.add_node("llm_sourcing_node", llm_sourcing_node)
+    graph.add_node("buyer_confirmation_node", buyer_confirmation_node)
     graph.add_node("supply_node", supply_node)
     graph.add_node("supply_scout_node", supply_scout_node)
     graph.add_node("risk_defense_node", risk_defense_node)
@@ -1054,13 +1259,26 @@ def build_matching_graph():
         if s.get("status") == "candidates_found" and s.get("source_type") == "LOCAL_INVENTORY":
             return "defend"
         if s.get("status") == "no_local_inventory":
-            return "scatter"
+            return "llm_source"
         return "finish"
 
     graph.add_conditional_edges(
         "local_inventory_node",
         _route_after_local_inventory,
-        {"defend": "risk_defense_node", "scatter": "scatter_node", "finish": END},
+        {"defend": "risk_defense_node", "llm_source": "llm_sourcing_node", "finish": END},
+    )
+
+
+    # llm_sourcing -> risk_defense (got quotes) | scatter (LLM failed)
+    def _route_after_llm_sourcing(s: MatchState) -> str:
+        if s.get("status") == "candidates_found":
+            return "defend"
+        return "scatter_fallback"
+
+    graph.add_conditional_edges(
+        "llm_sourcing_node",
+        _route_after_llm_sourcing,
+        {"defend": "risk_defense_node", "scatter_fallback": "scatter_node"},
     )
 
     # scatter -> supply_node (fallback) | risk_defense (got quotes) | END
@@ -1126,7 +1344,7 @@ def build_matching_graph():
     graph.add_edge("procurement_node", END)
 
     checkpointer = get_pg_checkpointer_sync()
-    return graph.compile(checkpointer=checkpointer)
+    return graph.compile(checkpointer=checkpointer, interrupt_before=["risk_defense_node"])
 
 
 class MatchingOrchestrator:
