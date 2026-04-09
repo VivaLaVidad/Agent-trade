@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useMemo } from "react";
+import { useRef, useMemo, useState, useEffect } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
 import { OrbitControls, Sphere, Line } from "@react-three/drei";
 import * as THREE from "three";
@@ -19,8 +19,14 @@ function latLngToVector3(lat: number, lng: number, radius: number): THREE.Vector
 function GlobeCore() {
   const meshRef = useRef<THREE.Mesh>(null);
 
+  const [reducedMotion, setReducedMotion] = useState(false);
+
+  useEffect(() => {
+    setReducedMotion(window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+  }, []);
+
   useFrame((_, delta) => {
-    if (meshRef.current) {
+    if (meshRef.current && !reducedMotion) {
       meshRef.current.rotation.y += delta * 0.05;
     }
   });
@@ -118,6 +124,7 @@ export function GlobeVisualization({ routes }: GlobeVisualizationProps) {
           autoRotateSpeed={0.3}
           minPolarAngle={Math.PI * 0.3}
           maxPolarAngle={Math.PI * 0.7}
+          enableDamping
         />
       </Canvas>
 

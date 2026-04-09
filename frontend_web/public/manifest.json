@@ -1,0 +1,16 @@
+{
+  "name": "OmniEdge — 全域工联",
+  "short_name": "OmniEdge",
+  "description": "AI-native cross-border industrial B2B trade platform",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#09090b",
+  "theme_color": "#00ff88",
+  "icons": [
+    {
+      "src": "/globe.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}
