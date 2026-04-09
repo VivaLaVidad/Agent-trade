@@ -54,8 +54,7 @@ function ParticleBackground() {
 
     let animationId: number;
     const animate = () => {
-      ctx.fillStyle = "rgba(10, 10, 10, 0.1)";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
 
       particles.forEach((p, i) => {
         p.x += p.vx;
