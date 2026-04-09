@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Shield } from "lucide-react";
 import type { PendingReview } from "@/lib/api/types";
 import { startReviewStream } from "@/lib/api/mock-data";
+import { useI18n } from "@/lib/i18n";
 
 type ReviewState = PendingReview & { decision?: "accepted" | "rejected" };
 
@@ -14,6 +15,7 @@ export interface HITLOverrideHandle {
 }
 
 export const HITLOverridePanel = forwardRef<HITLOverrideHandle>(function HITLOverridePanel(_props, ref) {
+  const { t } = useI18n();
   const [reviews, setReviews] = useState<ReviewState[]>([]);
 
   const addReview = useCallback((review: PendingReview) => {
@@ -33,13 +35,11 @@ export const HITLOverridePanel = forwardRef<HITLOverrideHandle>(function HITLOve
         r.trade_id === tradeId && !r.decision ? { ...r, decision } : r,
       ),
     );
-    // Remove after animation
     setTimeout(() => {
       setReviews((prev) => prev.filter((r) => r.trade_id !== tradeId || !r.decision));
     }, 1500);
   }, []);
 
-  // Expose accept/reject to parent via ref (for CommandBar integration)
   useImperativeHandle(ref, () => ({
     accept: (tradeId: string) => handleDecision(tradeId, "accepted"),
     reject: (tradeId: string) => handleDecision(tradeId, "rejected"),
@@ -47,7 +47,6 @@ export const HITLOverridePanel = forwardRef<HITLOverrideHandle>(function HITLOve
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header */}
       <div
         className={`flex items-center justify-between px-4 py-2 border-b transition-colors ${
           pendingCount > 0
@@ -56,16 +55,15 @@ export const HITLOverridePanel = forwardRef<HITLOverrideHandle>(function HITLOve
         }`}
       >
         <span className="text-[11px] font-mono font-semibold text-gray-300 tracking-wider">
-          HITL OVERRIDE
+          {t("merchant.hitl")}
         </span>
         {pendingCount > 0 && (
           <span className="px-2 py-0.5 text-[10px] font-mono font-bold bg-[#ffaa00]/20 text-[#ffaa00] rounded">
-            {pendingCount} PENDING
+            {pendingCount} {t("merchant.pending")}
           </span>
         )}
       </div>
 
-      {/* Content */}
       <div className="flex-1 overflow-y-auto bloomberg-scroll p-3">
         <AnimatePresence mode="popLayout">
           {pendingCount === 0 && (
@@ -77,7 +75,7 @@ export const HITLOverridePanel = forwardRef<HITLOverrideHandle>(function HITLOve
               className="flex flex-col items-center justify-center h-full gap-3 text-gray-700"
             >
               <Shield className="w-12 h-12 opacity-30" />
-              <span className="text-[11px] font-mono tracking-wider">NO PENDING REVIEWS</span>
+              <span className="text-[11px] font-mono tracking-wider">{t("merchant.no_pending")}</span>
             </motion.div>
           )}
 
@@ -109,7 +107,7 @@ export const HITLOverridePanel = forwardRef<HITLOverrideHandle>(function HITLOve
                       : "bg-[#ff0044]/10 text-[#ff0044]"
                   }`}
                 >
-                  {review.decision === "accepted" ? "CONFIRMED ✓" : "KILLED ✗"}
+                  {review.decision === "accepted" ? t("merchant.confirmed") : t("merchant.killed")}
                 </div>
               </motion.div>
             ))}
@@ -128,6 +126,7 @@ function ReviewCard({
   onAccept: () => void;
   onReject: () => void;
 }) {
+  const { t } = useI18n();
   return (
     <motion.div
       layout
@@ -136,7 +135,6 @@ function ReviewCard({
       exit={{ opacity: 0, scale: 0.9 }}
       className="bg-[#111] border border-[#ffaa00]/30 rounded-lg p-4 mb-3"
     >
-      {/* Trade ID */}
       <div className="flex items-center justify-between mb-3">
         <span className="text-[10px] font-mono text-gray-500">{review.trade_id}</span>
         <span className="text-[10px] font-mono text-gray-600">
@@ -144,45 +142,42 @@ function ReviewCard({
         </span>
       </div>
 
-      {/* Profit margin — big number */}
       <div className="text-center mb-3">
         <span className="text-3xl font-mono font-bold text-[#ffaa00]">
           {review.profit_margin_pct.toFixed(1)}%
         </span>
-        <p className="text-[9px] font-mono text-gray-600 mt-1">PROFIT MARGIN (GREY ZONE)</p>
+        <p className="text-[9px] font-mono text-gray-600 mt-1">{t("merchant.profit_margin")}</p>
       </div>
 
-      {/* Details */}
       <div className="grid grid-cols-2 gap-2 text-[10px] font-mono mb-4">
         <div>
-          <span className="text-gray-600">Buyer</span>
+          <span className="text-gray-600">{t("merchant.buyer")}</span>
           <p className="text-gray-300">{review.buyer_name}</p>
         </div>
         <div>
-          <span className="text-gray-600">Country</span>
+          <span className="text-gray-600">{t("common.country")}</span>
           <p className="text-gray-300">{review.buyer_country}</p>
         </div>
         <div>
-          <span className="text-gray-600">Product</span>
+          <span className="text-gray-600">{t("common.product")}</span>
           <p className="text-gray-300 truncate">{review.product}</p>
         </div>
         <div>
-          <span className="text-gray-600">Risk Score</span>
+          <span className="text-gray-600">{t("merchant.risk_score")}</span>
           <p className={`${review.risk_score > 30 ? "text-[#ffaa00]" : "text-gray-300"}`}>
             {review.risk_score}/100
           </p>
         </div>
         <div>
-          <span className="text-gray-600">Qty</span>
+          <span className="text-gray-600">{t("common.qty")}</span>
           <p className="text-gray-300">{review.quantity.toLocaleString()}</p>
         </div>
         <div>
-          <span className="text-gray-600">Price</span>
+          <span className="text-gray-600">{t("common.price")}</span>
           <p className="text-gray-300">${review.quoted_price_usd.toFixed(4)}/unit</p>
         </div>
       </div>
 
-      {/* Action buttons */}
       <div className="grid grid-cols-2 gap-2">
         <motion.button
           whileTap={{ scale: 0.95 }}
@@ -190,7 +185,7 @@ function ReviewCard({
           className="py-2.5 rounded-md bg-[#00ff88] text-black text-[11px] font-mono font-bold tracking-wider hover:bg-[#00ff88]/90 transition-colors"
           aria-label={`Accept trade ${review.trade_id}`}
         >
-          ACCEPT (OVRD)
+          {t("merchant.accept")}
         </motion.button>
         <motion.button
           whileTap={{ scale: 0.95 }}
@@ -198,7 +193,7 @@ function ReviewCard({
           className="py-2.5 rounded-md bg-[#ff0044] text-white text-[11px] font-mono font-bold tracking-wider hover:bg-[#ff0044]/90 transition-colors"
           aria-label={`Reject trade ${review.trade_id}`}
         >
-          REJECT (KILL)
+          {t("merchant.reject")}
         </motion.button>
       </div>
     </motion.div>

@@ -4,10 +4,12 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import type { MarketTick } from "@/lib/api/types";
 import { startMarketTickStream } from "@/lib/api/mock-data";
 import { AssetTearSheet } from "./AssetTearSheet";
+import { useI18n } from "@/lib/i18n";
 
 const MAX_TICKS = 100;
 
 export function MarketTickFeed() {
+  const { t } = useI18n();
   const [ticks, setTicks] = useState<(MarketTick & { flash?: string })[]>([]);
   const [selectedTick, setSelectedTick] = useState<MarketTick | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -27,26 +29,23 @@ export function MarketTickFeed() {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-[#1a1a1a]">
         <div className="flex items-center gap-2">
           <span className="text-[11px] font-mono font-semibold text-gray-300 tracking-wider">
-            MARKET DATA
+            {t("merchant.market_data")}
           </span>
           <div className="w-1.5 h-1.5 rounded-full bg-[#00ff88] animate-pulse-dot" />
         </div>
-        <span className="text-[10px] font-mono text-gray-600">{ticks.length} ticks</span>
+        <span className="text-[10px] font-mono text-gray-600">{ticks.length} {t("merchant.ticks")}</span>
       </div>
 
-      {/* Column headers */}
       <div className="grid grid-cols-4 gap-1 px-3 py-1.5 text-[9px] font-mono text-gray-600 uppercase tracking-wider border-b border-[#1a1a1a]">
-        <span>Symbol</span>
-        <span className="text-right">Price</span>
-        <span className="text-right">Chg%</span>
-        <span className="text-right">Vol</span>
+        <span>{t("merchant.symbol")}</span>
+        <span className="text-right">{t("common.price")}</span>
+        <span className="text-right">{t("merchant.chg")}</span>
+        <span className="text-right">{t("merchant.vol")}</span>
       </div>
 
-      {/* Tick rows */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto bloomberg-scroll">
         {ticks.map((tick, i) => (
           <div
@@ -71,7 +70,6 @@ export function MarketTickFeed() {
         ))}
       </div>
 
-      {/* Asset Tear Sheet Drawer */}
       <AssetTearSheet
         open={selectedTick !== null}
         onClose={() => setSelectedTick(null)}

@@ -77,7 +77,7 @@ export default function AdminPage() {
               <div className="flex items-center justify-between mb-6">
                 <div className="flex items-center gap-3">
                   <Lock className="w-5 h-5 text-gray-400" />
-                  <h3 className="text-lg font-semibold text-gray-200">Admin Access</h3>
+                  <h3 className="text-lg font-semibold text-gray-200">{t("admin.token_title")}</h3>
                 </div>
                 <button
                   onClick={() => setShowTokenDialog(false)}
@@ -88,7 +88,7 @@ export default function AdminPage() {
                 </button>
               </div>
               <p className="text-sm text-gray-500 mb-4">
-                Enter your hardware token to access the dashboard.
+                {t("admin.token_desc")}
               </p>
               <input
                 type="password"
@@ -112,10 +112,10 @@ export default function AdminPage() {
                 onClick={handleTokenSubmit}
                 className="w-full mt-4 py-3 rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 text-white text-sm font-semibold hover:opacity-90 transition-opacity"
               >
-                Authenticate
+                {t("admin.authenticate")}
               </button>
               <p className="text-[10px] text-gray-600 text-center mt-3">
-                Demo: enter any 4+ character token
+                {t("admin.token_hint")}
               </p>
             </motion.div>
           </motion.div>
@@ -145,7 +145,7 @@ export default function AdminPage() {
           {authorized ? (
             <span className="flex items-center gap-1.5 text-[10px] font-mono text-emerald-500">
               <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse-dot" />
-              AUTHENTICATED
+              {t("admin.authenticated")}
             </span>
           ) : (
             <button
@@ -153,7 +153,7 @@ export default function AdminPage() {
               className="flex items-center gap-1.5 text-[10px] font-mono text-gray-500 hover:text-gray-300 transition-colors"
             >
               <Lock className="w-3 h-3" />
-              LOCKED
+              {t("admin.locked")}
             </button>
           )}
           <LanguageSwitcher />
@@ -165,7 +165,7 @@ export default function AdminPage() {
         {/* KPI Cards */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <KPICard
-            title="Today's Inquiries"
+            title={t("admin.inquiries")}
             value={MOCK_KPIS.total_inquiries}
             gradient="from-blue-400 to-cyan-400"
           >
@@ -181,7 +181,7 @@ export default function AdminPage() {
           </KPICard>
 
           <KPICard
-            title="Hedge Success"
+            title={t("admin.hedge_success")}
             value={MOCK_KPIS.hedge_success}
             gradient="from-emerald-400 to-green-400"
           >
@@ -211,7 +211,7 @@ export default function AdminPage() {
           </KPICard>
 
           <KPICard
-            title="RegGuard Blocks"
+            title={t("admin.regguard_blocks")}
             value={MOCK_KPIS.regguard_blocks}
             gradient="from-red-400 to-orange-400"
           >

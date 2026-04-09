@@ -3,6 +3,7 @@
 import { motion, AnimatePresence } from "framer-motion";
 import { X } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
+import { useI18n } from "@/lib/i18n";
 
 interface AssetTearSheetProps {
   open: boolean;
@@ -12,7 +13,6 @@ interface AssetTearSheetProps {
   currentPrice: number;
 }
 
-// Mock 7-day price history generator
 function generatePriceHistory(basePrice: number): { day: string; price: number }[] {
   const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
   let price = basePrice * (0.95 + Math.random() * 0.05);
@@ -22,7 +22,6 @@ function generatePriceHistory(basePrice: number): { day: string; price: number }
   });
 }
 
-// Mock supplier data
 const MOCK_SUPPLIERS: Record<string, { supplier: string; risk: "Low" | "Medium" | "High" }> = {
   "CAP-100NF": { supplier: "Yageo Corp (Shenzhen)", risk: "Low" },
   "RES-10K": { supplier: "Samsung Electro-Mechanics", risk: "Low" },
@@ -41,6 +40,7 @@ const RISK_COLORS: Record<string, string> = {
 };
 
 export function AssetTearSheet({ open, onClose, symbol, tickerId, currentPrice }: AssetTearSheetProps) {
+  const { t } = useI18n();
   const priceHistory = generatePriceHistory(currentPrice);
   const info = MOCK_SUPPLIERS[symbol] || { supplier: "Unknown Supplier", risk: "Medium" as const };
 
@@ -48,7 +48,6 @@ export function AssetTearSheet({ open, onClose, symbol, tickerId, currentPrice }
     <AnimatePresence>
       {open && (
         <>
-          {/* Backdrop */}
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -57,7 +56,6 @@ export function AssetTearSheet({ open, onClose, symbol, tickerId, currentPrice }
             className="fixed inset-0 bg-black/60 z-40"
           />
 
-          {/* Drawer */}
           <motion.div
             initial={{ x: "100%" }}
             animate={{ x: 0 }}
@@ -66,10 +64,9 @@ export function AssetTearSheet({ open, onClose, symbol, tickerId, currentPrice }
             className="fixed right-0 top-0 bottom-0 w-[420px] z-50 glass-dark overflow-y-auto bloomberg-scroll"
           >
             <div className="p-6 flex flex-col h-full">
-              {/* Header */}
               <div className="flex items-center justify-between mb-6">
                 <div>
-                  <p className="text-[9px] font-mono text-gray-500 tracking-widest mb-1">ASSET PROFILE</p>
+                  <p className="text-[9px] font-mono text-gray-500 tracking-widest mb-1">{t("merchant.asset_profile")}</p>
                   <h2 className="text-lg font-mono font-bold text-gray-100">{symbol}</h2>
                   <p className="text-[10px] font-mono text-gray-600 mt-0.5">{tickerId}</p>
                 </div>
@@ -82,17 +79,15 @@ export function AssetTearSheet({ open, onClose, symbol, tickerId, currentPrice }
                 </button>
               </div>
 
-              {/* Current Price */}
               <div className="bg-white/[0.03] rounded-lg p-4 mb-4 border border-white/[0.06]">
-                <p className="text-[9px] font-mono text-gray-500 tracking-wider mb-1">CURRENT PRICE</p>
+                <p className="text-[9px] font-mono text-gray-500 tracking-wider mb-1">{t("merchant.current_price")}</p>
                 <span className="text-2xl font-mono font-bold text-gray-100">
                   ${currentPrice.toFixed(4)}
                 </span>
               </div>
 
-              {/* 7-Day Chart */}
               <div className="bg-white/[0.03] rounded-lg p-4 mb-4 border border-white/[0.06]">
-                <p className="text-[9px] font-mono text-gray-500 tracking-wider mb-3">7-DAY PRICE HISTORY</p>
+                <p className="text-[9px] font-mono text-gray-500 tracking-wider mb-3">{t("merchant.price_history")}</p>
                 <div className="h-[180px]">
                   <ResponsiveContainer width="100%" height="100%">
                     <LineChart data={priceHistory}>
@@ -118,7 +113,7 @@ export function AssetTearSheet({ open, onClose, symbol, tickerId, currentPrice }
                           fontFamily: "monospace",
                           color: "#00ff88",
                         }}
-                        formatter={(value) => [`$${Number(value).toFixed(4)}`, "Price"]}
+                        formatter={(value) => [`$${Number(value).toFixed(4)}`, t("common.price")]}
                       />
                       <Line
                         type="monotone"
@@ -133,15 +128,13 @@ export function AssetTearSheet({ open, onClose, symbol, tickerId, currentPrice }
                 </div>
               </div>
 
-              {/* Supplier Info */}
               <div className="bg-white/[0.03] rounded-lg p-4 mb-4 border border-white/[0.06]">
-                <p className="text-[9px] font-mono text-gray-500 tracking-wider mb-2">BEST UPSTREAM SUPPLIER</p>
+                <p className="text-[9px] font-mono text-gray-500 tracking-wider mb-2">{t("merchant.best_supplier")}</p>
                 <p className="text-[13px] font-mono text-gray-200">{info.supplier}</p>
               </div>
 
-              {/* Compliance Risk */}
               <div className="bg-white/[0.03] rounded-lg p-4 border border-white/[0.06]">
-                <p className="text-[9px] font-mono text-gray-500 tracking-wider mb-2">REGGUARD COMPLIANCE RISK</p>
+                <p className="text-[9px] font-mono text-gray-500 tracking-wider mb-2">{t("merchant.compliance_risk")}</p>
                 <span
                   className={`inline-block px-3 py-1 text-[11px] font-mono font-bold rounded border ${RISK_COLORS[info.risk]}`}
                 >

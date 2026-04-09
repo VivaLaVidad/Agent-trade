@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Terminal } from "lucide-react";
+import { useI18n } from "@/lib/i18n";
 
 interface CommandResult {
   id: number;
@@ -18,6 +19,7 @@ interface CommandBarProps {
 let resultId = 0;
 
 export function CommandBar({ onOverride, onKill }: CommandBarProps) {
+  const { t } = useI18n();
   const [input, setInput] = useState("");
   const [history, setHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
@@ -44,7 +46,6 @@ export function CommandBar({ onOverride, onKill }: CommandBarProps) {
       setHistory((prev) => [cmd, ...prev].slice(0, 50));
       setHistoryIndex(-1);
 
-      // Parse OVRD <trade_id> <margin>
       const ovrdMatch = trimmed.match(/^OVRD\s+([\w-]+)\s+([\d.]+)$/);
       if (ovrdMatch) {
         const tradeId = ovrdMatch[1];
@@ -58,7 +59,6 @@ export function CommandBar({ onOverride, onKill }: CommandBarProps) {
         return;
       }
 
-      // Parse KILL <trade_id>
       const killMatch = trimmed.match(/^KILL\s+([\w-]+)$/);
       if (killMatch) {
         const tradeId = killMatch[1];
@@ -67,7 +67,6 @@ export function CommandBar({ onOverride, onKill }: CommandBarProps) {
         return;
       }
 
-      // Unknown command
       showResult("error", `UNKNOWN COMMAND: ${trimmed.split(" ")[0]} — try OVRD or KILL`);
     },
     [onOverride, onKill, showResult],
@@ -99,7 +98,6 @@ export function CommandBar({ onOverride, onKill }: CommandBarProps) {
 
   return (
     <div className="fixed bottom-0 left-0 right-0 z-50">
-      {/* Flash feedback */}
       <AnimatePresence>
         {results.map((result) => (
           <motion.div
@@ -118,7 +116,6 @@ export function CommandBar({ onOverride, onKill }: CommandBarProps) {
         ))}
       </AnimatePresence>
 
-      {/* Command input */}
       <div className="bg-[#0a0a0a] border-t border-[#1a1a1a] px-4 py-2">
         <div className="flex items-center gap-3 max-w-full">
           <Terminal className="w-4 h-4 text-[#00ff88] flex-shrink-0" />
@@ -129,14 +126,14 @@ export function CommandBar({ onOverride, onKill }: CommandBarProps) {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="OVRD TRD-7821 4.5  |  KILL TRD-7821"
+            placeholder={t("merchant.cmd_placeholder")}
             className="flex-1 bg-transparent text-[#00ff88] text-[12px] font-mono placeholder-[#00ff88]/30 focus:outline-none caret-[#00ff88]"
             spellCheck={false}
             autoComplete="off"
             aria-label="Command bar input"
           />
           <span className="text-[9px] font-mono text-gray-600 flex-shrink-0">
-            {history.length > 0 ? `${history.length} cmds` : ""}
+            {history.length > 0 ? `${history.length} ${t("merchant.cmds")}` : ""}
           </span>
         </div>
       </div>

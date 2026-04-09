@@ -1,10 +1,13 @@
 "use client";
 
+import { useI18n } from "@/lib/i18n";
+
 interface ConnectionStatusProps {
   connected: boolean;
 }
 
 export function ConnectionStatus({ connected }: ConnectionStatusProps) {
+  const { t } = useI18n();
   return (
     <div className="flex items-center gap-2">
       <div
@@ -15,7 +18,7 @@ export function ConnectionStatus({ connected }: ConnectionStatusProps) {
         }`}
       />
       <span className="text-[10px] font-mono text-gray-500 uppercase tracking-wider">
-        {connected ? "LIVE" : "DISCONNECTED"}
+        {connected ? t("merchant.live") : t("merchant.disconnected")}
       </span>
     </div>
   );

@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { MarketEvent, EventType } from "@/lib/api/types";
 import { startEventStream } from "@/lib/api/mock-data";
+import { useI18n } from "@/lib/i18n";
 
 const EVENT_STYLES: Record<EventType, { bg: string; text: string; label: string }> = {
   hedge_locked: { bg: "bg-[#00ff88]/20", text: "text-[#00ff88]", label: "HEDGE-LOCKED" },
@@ -20,6 +21,7 @@ const EVENT_STYLES: Record<EventType, { bg: string; text: string; label: string 
 const MAX_EVENTS = 200;
 
 export function EventFeed() {
+  const { t } = useI18n();
   const [events, setEvents] = useState<MarketEvent[]>([]);
   const [count, setCount] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -48,15 +50,13 @@ export function EventFeed() {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-[#1a1a1a]">
         <span className="text-[11px] font-mono font-semibold text-gray-300 tracking-wider">
-          EVENT STREAM
+          {t("merchant.events")}
         </span>
-        <span className="text-[10px] font-mono text-gray-600">{count} msgs</span>
+        <span className="text-[10px] font-mono text-gray-600">{count} {t("merchant.msgs")}</span>
       </div>
 
-      {/* Events */}
       <div
         ref={scrollRef}
         onScroll={handleScroll}
