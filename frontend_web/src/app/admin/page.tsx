@@ -7,6 +7,8 @@ import { ArrowLeft, Lock, X } from "lucide-react";
 import { KPICard } from "@/components/admin/KPICard";
 import { AuditLogStream } from "@/components/admin/AuditLogStream";
 import { MOCK_KPIS, MOCK_TRADE_ROUTES } from "@/lib/api/mock-data";
+import { useI18n } from "@/lib/i18n";
+import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 
 const GlobeVisualization = lazy(() =>
   import("@/components/admin/GlobeVisualization").then((m) => ({
@@ -15,13 +17,13 @@ const GlobeVisualization = lazy(() =>
 );
 
 export default function AdminPage() {
+  const { t } = useI18n();
   const [authorized, setAuthorized] = useState(false);
   const [showTokenDialog, setShowTokenDialog] = useState(true);
   const [tokenInput, setTokenInput] = useState("");
   const [tokenError, setTokenError] = useState(false);
 
   const handleTokenSubmit = () => {
-    // Accept any non-empty token for demo
     if (tokenInput.trim().length >= 4) {
       setAuthorized(true);
       setShowTokenDialog(false);
@@ -33,7 +35,7 @@ export default function AdminPage() {
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-[#050a15] to-[#0a1628] text-gray-200">
-      {/* Particle background effect (CSS-based) */}
+      {/* Particle background effect */}
       <div className="fixed inset-0 overflow-hidden pointer-events-none">
         {Array.from({ length: 30 }).map((_, i) => (
           <motion.div
@@ -86,7 +88,7 @@ export default function AdminPage() {
                 </button>
               </div>
               <p className="text-sm text-gray-500 mb-4">
-                Enter your hardware token to access the God Mode dashboard.
+                Enter your hardware token to access the dashboard.
               </p>
               <input
                 type="password"
@@ -132,10 +134,10 @@ export default function AdminPage() {
           </Link>
           <div>
             <h1 className="text-sm font-mono font-bold text-gray-300 tracking-widest">
-              GOD MODE DASHBOARD
+              {t("admin.title").toUpperCase()}
             </h1>
             <p className="text-[10px] font-mono text-gray-600">
-              TradeStealth Command Center
+              TradeForge {t("admin.title")}
             </p>
           </div>
         </div>
@@ -154,6 +156,7 @@ export default function AdminPage() {
               LOCKED
             </button>
           )}
+          <LanguageSwitcher />
         </div>
       </header>
 
@@ -166,7 +169,6 @@ export default function AdminPage() {
             value={MOCK_KPIS.total_inquiries}
             gradient="from-blue-400 to-cyan-400"
           >
-            {/* Mini sparkline */}
             <div className="flex items-end gap-1 h-8">
               {MOCK_KPIS.inquiries_trend.map((v, i) => (
                 <div
@@ -183,7 +185,6 @@ export default function AdminPage() {
             value={MOCK_KPIS.hedge_success}
             gradient="from-emerald-400 to-green-400"
           >
-            {/* Success rate ring */}
             <div className="flex items-center gap-3">
               <div className="relative w-10 h-10">
                 <svg viewBox="0 0 36 36" className="w-full h-full -rotate-90">
@@ -214,7 +215,6 @@ export default function AdminPage() {
             value={MOCK_KPIS.regguard_blocks}
             gradient="from-red-400 to-orange-400"
           >
-            {/* Block type distribution */}
             <div className="flex gap-2">
               {Object.entries(MOCK_KPIS.block_types).map(([type, count]) => (
                 <div key={type} className="text-center">

@@ -15,6 +15,8 @@ import {
   Loader2,
   BadgeCheck,
 } from "lucide-react";
+import { useI18n } from "@/lib/i18n";
+import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 
 /* ── Mock inventory data (mirrors backend 50 SKUs) ── */
 const MOCK_SKUS = [
@@ -50,13 +52,13 @@ type FlashResult = {
 };
 
 export default function BuyerPage() {
+  const { t } = useI18n();
   const [query, setQuery] = useState("");
   const [filtered, setFiltered] = useState(MOCK_SKUS);
   const [phase, setPhase] = useState<"idle" | "searching" | "result" | "ordered">("idle");
   const [result, setResult] = useState<FlashResult | null>(null);
   const [qty, setQty] = useState(1000);
 
-  // Fuzzy search
   useEffect(() => {
     if (!query.trim()) {
       setFiltered(MOCK_SKUS);
@@ -76,7 +78,6 @@ export default function BuyerPage() {
   const handleFlashOrder = useCallback(
     async (skuName: string) => {
       setPhase("searching");
-      // Simulate API call to /api/v1/buyer/flash-intent
       await new Promise((r) => setTimeout(r, 1500));
 
       const match = MOCK_SKUS.find(
@@ -131,14 +132,15 @@ export default function BuyerPage() {
             </Link>
             <div>
               <h1 className="text-sm font-light tracking-tight">
-                Trade<span className="font-bold text-emerald-400">Stealth</span>
+                Trade<span className="font-bold text-emerald-400">Forge</span>
               </h1>
-              <p className="text-[10px] text-gray-500 font-mono">SEA Buyer Portal</p>
+              <p className="text-[10px] text-gray-500 font-mono">{t("buyer.title")}</p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
             <span className="hidden sm:inline text-[10px] text-gray-600 font-mono">Huaqiangbei Direct</span>
             <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+            <LanguageSwitcher />
           </div>
         </div>
       </header>
@@ -168,14 +170,14 @@ export default function BuyerPage() {
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search 50+ Huaqiangbei SKUs..."
+            placeholder={t("buyer.placeholder")}
             className="w-full pl-10 pr-4 py-3 bg-white/5 border border-white/10 rounded-xl text-sm text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/20 transition-all"
           />
         </div>
 
         {/* Quantity selector */}
         <div className="flex items-center gap-3 mb-5">
-          <label className="text-xs text-gray-500">QTY:</label>
+          <label className="text-xs text-gray-500">{t("buyer.qty")}:</label>
           <div className="flex gap-1.5">
             {[100, 500, 1000, 5000].map((q) => (
               <button
@@ -242,7 +244,7 @@ export default function BuyerPage() {
                     className="w-full py-2 text-xs font-medium rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/20 active:scale-[0.98] transition-all flex items-center justify-center gap-1.5"
                   >
                     <Zap className="w-3.5 h-3.5" />
-                    Flash Order
+                    {t("buyer.order")}
                   </button>
                 </motion.div>
               ))}
@@ -265,7 +267,7 @@ export default function BuyerPage() {
               className="flex flex-col items-center py-16"
             >
               <Loader2 className="w-10 h-10 text-emerald-400 animate-spin mb-4" />
-              <p className="text-sm text-gray-400">Matching inventory &amp; checking compliance...</p>
+              <p className="text-sm text-gray-400">{t("buyer.searching")}</p>
               <p className="text-[10px] text-gray-600 mt-1 font-mono">local_inventory_node → reg_guard → flash_intent</p>
             </motion.div>
           )}
@@ -300,11 +302,11 @@ export default function BuyerPage() {
                     </div>
                     <div className="grid grid-cols-2 gap-3">
                       <div className="bg-white/5 rounded-lg p-3">
-                        <p className="text-[10px] text-gray-500 mb-1">Unit Price</p>
+                        <p className="text-[10px] text-gray-500 mb-1">{t("common.price")}</p>
                         <p className="text-lg font-bold text-emerald-400">${result.sku_match.unit_price_usd}</p>
                       </div>
                       <div className="bg-white/5 rounded-lg p-3">
-                        <p className="text-[10px] text-gray-500 mb-1">Available</p>
+                        <p className="text-[10px] text-gray-500 mb-1">{t("common.quantity")}</p>
                         <p className="text-lg font-bold text-white">
                           {result.sku_match.stock_qty >= 1000
                             ? `${(result.sku_match.stock_qty / 1000).toFixed(0)}K`
@@ -343,7 +345,7 @@ export default function BuyerPage() {
                     className="w-full py-3 text-sm font-semibold rounded-xl bg-emerald-500 text-white hover:bg-emerald-600 active:scale-[0.98] transition-all flex items-center justify-center gap-2"
                   >
                     <Zap className="w-4 h-4" />
-                    Confirm Flash Order — {qty} units
+                    {t("buyer.order")} — {qty} units
                   </button>
                 )}
 
@@ -354,7 +356,7 @@ export default function BuyerPage() {
                   }}
                   className="w-full mt-2 py-2 text-xs text-gray-500 hover:text-gray-300 transition-colors"
                 >
-                  ← Back to search
+                  {t("buyer.back")}
                 </button>
               </div>
             </motion.div>
@@ -391,7 +393,7 @@ export default function BuyerPage() {
                 }}
                 className="px-6 py-2 text-xs text-emerald-400 hover:bg-emerald-500/10 rounded-lg transition-colors"
               >
-                New Inquiry
+                {t("buyer.search")}
               </button>
             </motion.div>
           )}

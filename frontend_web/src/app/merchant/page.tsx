@@ -3,6 +3,8 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
+import { useI18n } from "@/lib/i18n";
+import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ConnectionStatus } from "@/components/merchant/ConnectionStatus";
 import { MarketTickFeed } from "@/components/merchant/MarketTickFeed";
 import { HITLOverridePanel } from "@/components/merchant/HITLOverridePanel";
@@ -10,10 +12,10 @@ import { EventFeed } from "@/components/merchant/EventFeed";
 import { CommandBar } from "@/components/merchant/CommandBar";
 
 export default function MerchantPage() {
+  const { t } = useI18n();
   const [utcTime, setUtcTime] = useState("");
   const [pnl, setPnl] = useState({ value: 0, positive: true });
 
-  // UTC clock
   useEffect(() => {
     const tick = () => {
       setUtcTime(
@@ -28,7 +30,6 @@ export default function MerchantPage() {
     return () => clearInterval(interval);
   }, []);
 
-  // Simulated P&L
   useEffect(() => {
     const interval = setInterval(() => {
       setPnl((prev) => {
@@ -40,7 +41,6 @@ export default function MerchantPage() {
     return () => clearInterval(interval);
   }, []);
 
-  // Ref to HITL panel for command bar integration
   const hitlRef = useRef<{ accept: (id: string) => void; reject: (id: string) => void } | null>(null);
 
   const handleOverride = useCallback((tradeId: string, _margin: number) => {
@@ -53,7 +53,6 @@ export default function MerchantPage() {
 
   return (
     <div className="h-screen flex flex-col bg-[#0a0a0a] text-gray-200 font-mono overflow-hidden">
-      {/* Top status bar */}
       <header className="flex items-center justify-between px-4 py-2 border-b border-[#1a1a1a] flex-shrink-0">
         <div className="flex items-center gap-4">
           <Link
@@ -64,14 +63,13 @@ export default function MerchantPage() {
             <ArrowLeft className="w-4 h-4 text-gray-500" />
           </Link>
           <span className="text-[11px] font-bold text-gray-300 tracking-widest">
-            ARBITRAGE DESK v2.0
+            {t("merchant.title")} v2.0
           </span>
           <ConnectionStatus connected={true} />
         </div>
-        <div className="flex items-center gap-6">
-          {/* P&L */}
+        <div className="flex items-center gap-4">
           <div className="flex items-center gap-2">
-            <span className="text-[9px] text-gray-600 tracking-wider">TODAY P&L</span>
+            <span className="text-[9px] text-gray-600 tracking-wider">{t("merchant.pnl")}</span>
             <span
               className={`text-sm font-bold ${
                 pnl.positive ? "text-[#00ff88]" : "text-[#ff0044]"
@@ -80,30 +78,23 @@ export default function MerchantPage() {
               {pnl.positive ? "+" : ""}${pnl.value.toFixed(2)}
             </span>
           </div>
-          {/* UTC Clock */}
           <span className="text-[11px] text-gray-500">{utcTime}</span>
+          <LanguageSwitcher />
         </div>
       </header>
 
-      {/* Main 3-column layout — leave room for command bar at bottom */}
-      <main className="flex-1 grid grid-cols-[300px_1fr_350px] min-h-0 pb-10">
-        {/* Left: Market Tick Feed */}
-        <div className="border-r border-[#1a1a1a] min-h-0 overflow-hidden">
+      <main className="flex-1 grid grid-cols-1 md:grid-cols-[300px_1fr_350px] min-h-0 pb-10">
+        <div className="border-r border-[#1a1a1a] min-h-0 overflow-hidden hidden md:block">
           <MarketTickFeed />
         </div>
-
-        {/* Center: HITL Override */}
         <div className="border-r border-[#1a1a1a] min-h-0 overflow-hidden">
           <HITLOverridePanel ref={hitlRef} />
         </div>
-
-        {/* Right: Event Feed */}
-        <div className="min-h-0 overflow-hidden">
+        <div className="min-h-0 overflow-hidden hidden md:block">
           <EventFeed />
         </div>
       </main>
 
-      {/* Command Bar */}
       <CommandBar onOverride={handleOverride} onKill={handleKill} />
     </div>
   );
