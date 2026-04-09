@@ -8,7 +8,7 @@ echo "=== TradeForge Deploy ==="
 
 # Auto-detect project directory
 PROJECT_DIR=""
-for d in /root/TradeStealth_Core /home/ubuntu/TradeStealth_Core /root/Agent-trade /home/ubuntu/Agent-trade; do
+for d in /opt/TradeStealth_Core /root/TradeStealth_Core /home/ubuntu/TradeStealth_Core /root/Agent-trade /home/ubuntu/Agent-trade; do
   if [ -d "$d/frontend_web" ]; then
     PROJECT_DIR="$d"
     break
