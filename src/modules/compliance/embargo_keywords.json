@@ -23,5 +23,74 @@
     "night vision", "thermal imaging", "radar jamming",
     "stealth coating", "ballistic", "chemical weapon",
     "biological agent", "detonator", "shaped charge"
-  ]
+  ],
+  "import_certification_rules": {
+    "Malaysia": {
+      "telecom": {
+        "authority": "MCMC / SIRIM QAS International",
+        "required_certs": ["SIRIM", "MCMC Type Approval"],
+        "equivalent_certs": ["CE", "FCC"],
+        "description": "All RF/5G equipment requires SIRIM QAS Type Approval or equivalent CE/FCC for conversion",
+        "keywords": ["5g", "lte", "base station", "cpe", "antenna", "rf", "radio", "wireless", "router", "modem", "repeater", "small cell"]
+      },
+      "mining_safety": {
+        "authority": "DOSH / JMG (Jabatan Mineral dan Geosains)",
+        "required_certs": ["IECEx", "ATEX"],
+        "equivalent_certs": ["MA", "CNEx"],
+        "description": "Underground mining equipment must meet IECEx/ATEX intrinsic safety or flameproof standards",
+        "keywords": ["mining", "mine", "underground", "explosion-proof", "intrinsic safety", "flameproof", "hazardous area", "coal", "tunnel", "ex-rated"]
+      }
+    },
+    "Vietnam": {
+      "telecom": {
+        "authority": "MIC (Ministry of Information and Communications)",
+        "required_certs": ["MIC Type Approval"],
+        "equivalent_certs": ["CE", "FCC"],
+        "description": "Telecom equipment requires MIC Vietnam type approval",
+        "keywords": ["5g", "lte", "base station", "cpe", "antenna", "rf", "radio", "wireless", "router"]
+      }
+    },
+    "Thailand": {
+      "telecom": {
+        "authority": "NBTC (National Broadcasting and Telecommunications Commission)",
+        "required_certs": ["NBTC Type Approval"],
+        "equivalent_certs": ["CE", "FCC"],
+        "description": "Telecom equipment requires NBTC Thailand type approval",
+        "keywords": ["5g", "lte", "base station", "cpe", "antenna", "rf", "radio", "wireless", "router"]
+      }
+    },
+    "Singapore": {
+      "telecom": {
+        "authority": "IMDA (Infocomm Media Development Authority)",
+        "required_certs": ["IMDA Registration"],
+        "equivalent_certs": ["CE", "FCC"],
+        "description": "Telecom equipment requires IMDA registration",
+        "keywords": ["5g", "lte", "base station", "cpe", "antenna", "rf", "radio", "wireless", "router"]
+      }
+    },
+    "India": {
+      "telecom": {
+        "authority": "WPC / TEC (Wireless Planning & Coordination / Telecom Engineering Centre)",
+        "required_certs": ["WPC ETA", "TEC Certification"],
+        "equivalent_certs": ["CE", "FCC"],
+        "description": "Telecom equipment requires WPC Equipment Type Approval and TEC certification",
+        "keywords": ["5g", "lte", "base station", "cpe", "antenna", "rf", "radio", "wireless", "router"]
+      },
+      "mining_safety": {
+        "authority": "DGMS (Directorate General of Mines Safety)",
+        "required_certs": ["DGMS Approval", "IS/IEC 60079"],
+        "equivalent_certs": ["IECEx", "ATEX"],
+        "description": "Mining equipment requires DGMS approval under IS/IEC 60079 series",
+        "keywords": ["mining", "mine", "underground", "explosion-proof", "intrinsic safety", "flameproof", "coal"]
+      }
+    }
+  },
+  "cert_equivalence_map": {
+    "MA": {"standard": "China Coal Safety (Mei'an)", "intl_equivalent": ["IECEx", "ATEX"], "note": "MA cert holders can apply for IECEx/ATEX conversion via accredited CB scheme"},
+    "CNEx": {"standard": "China National Explosion-proof", "intl_equivalent": ["IECEx", "ATEX"], "note": "CNEx aligns with IEC 60079 series"},
+    "CE": {"standard": "EU Conformity", "intl_equivalent": ["SIRIM", "MCMC Type Approval", "NBTC Type Approval", "IMDA Registration"], "note": "CE marking widely accepted as basis for local type approval conversion"},
+    "FCC": {"standard": "US Federal Communications Commission", "intl_equivalent": ["SIRIM", "MCMC Type Approval", "NBTC Type Approval", "IMDA Registration"], "note": "FCC certification accepted as equivalent basis in most ASEAN markets"},
+    "IECEx": {"standard": "International Electrotechnical Commission Explosive Atmospheres", "intl_equivalent": ["ATEX", "DGMS Approval"], "note": "Gold standard for international mining/hazardous area equipment"},
+    "ATEX": {"standard": "EU Explosive Atmospheres Directive 2014/34/EU", "intl_equivalent": ["IECEx", "DGMS Approval"], "note": "EU directive, mutually recognized with IECEx"}
+  }
 }
