@@ -232,7 +232,7 @@ export default function HomePage() {
       <ParticleBackground />
 
       {/* Top bar */}
-      <header className="relative z-10 flex items-center justify-between px-6 py-4 border-b border-zinc-800/50 bg-zinc-950/80 backdrop-blur-sm">
+      <header className="relative z-20 flex items-center justify-between px-6 py-4 border-b border-zinc-800/50 bg-zinc-950/80 backdrop-blur-sm">
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2">
             <div className="w-8 h-8 rounded bg-gradient-to-br from-emerald-400 to-green-500 flex items-center justify-center">
