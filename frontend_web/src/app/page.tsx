@@ -9,8 +9,8 @@ import { Sparkline } from "@/components/Sparkline";
 import { TerminalLogViewer } from "@/components/TerminalLogViewer";
 import { useEffect, useState, useRef } from "react";
 
-// Mock ticker data for the tape
-const TICKER_DATA = [
+// Fallback ticker data (used when backend is unreachable)
+const FALLBACK_TICKER_DATA = [
   { symbol: "CLAW-ELEC-5GCPE", price: 128.00, change: 2.3 },
   { symbol: "CLAW-MECH-CNC01", price: 4520.00, change: -0.8 },
   { symbol: "CLAW-TELE-5GANT", price: 890.50, change: 1.2 },
@@ -20,6 +20,9 @@ const TICKER_DATA = [
   { symbol: "CLAW-TRANS-LOGIS", price: 892.00, change: 0.2 },
   { symbol: "CLAW-CHEM-REACT", price: 3450.00, change: -0.3 },
 ];
+
+const API_BASE =
+  process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8900";
 
 // Particle background component
 function ParticleBackground() {
@@ -115,6 +118,23 @@ function ParticleBackground() {
 // Ticker tape component
 function TickerTape() {
   const [position, setPosition] = useState(0);
+  const [tickerData, setTickerData] = useState(FALLBACK_TICKER_DATA);
+
+  // Fetch real ticker data from backend
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${API_BASE}/api/v1/ticker/tape`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (!cancelled && Array.isArray(data) && data.length > 0) {
+          setTickerData(data);
+        }
+      })
+      .catch(() => {
+        // Keep fallback data
+      });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -123,7 +143,7 @@ function TickerTape() {
     return () => clearInterval(interval);
   }, []);
 
-  const duplicatedData = [...TICKER_DATA, ...TICKER_DATA, ...TICKER_DATA];
+  const duplicatedData = [...tickerData, ...tickerData, ...tickerData];
 
   return (
     <div className="fixed bottom-0 left-0 right-0 z-40 bg-zinc-950/95 backdrop-blur-sm border-t border-zinc-800">

@@ -11,10 +11,14 @@ import { HITLOverridePanel } from "@/components/merchant/HITLOverridePanel";
 import { EventFeed } from "@/components/merchant/EventFeed";
 import { CommandBar } from "@/components/merchant/CommandBar";
 
+const API_BASE =
+  process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8900";
+
 export default function MerchantPage() {
   const { t } = useI18n();
   const [utcTime, setUtcTime] = useState("");
   const [pnl, setPnl] = useState({ value: 0, positive: true });
+  const [sseConnected, setSseConnected] = useState(false);
 
   useEffect(() => {
     const tick = () => {
@@ -30,15 +34,66 @@ export default function MerchantPage() {
     return () => clearInterval(interval);
   }, []);
 
+  // SSE: connect to /api/v1/merchant/stream for real trade events → PnL
+  // Falls back to mock random walk if SSE fails or backend is unreachable
   useEffect(() => {
-    const interval = setInterval(() => {
-      setPnl((prev) => {
-        const delta = (Math.random() - 0.45) * 15;
-        const next = prev.value + delta;
-        return { value: next, positive: next >= 0 };
+    let es: EventSource | null = null;
+    let mockInterval: ReturnType<typeof setInterval> | null = null;
+    let closed = false;
+
+    try {
+      es = new EventSource(`${API_BASE}/api/v1/merchant/stream`);
+
+      es.onopen = () => {
+        if (!closed) setSseConnected(true);
+      };
+
+      es.addEventListener("new_trade", (event) => {
+        if (closed) return;
+        try {
+          const trade = JSON.parse(event.data);
+          // Accumulate PnL from trade route_fee or margin
+          const delta = trade.route_fee ?? trade.margin ?? (Math.random() - 0.4) * 20;
+          setPnl((prev) => {
+            const next = prev.value + delta;
+            return { value: next, positive: next >= 0 };
+          });
+        } catch {
+          // skip malformed SSE data
+        }
       });
-    }, 3000);
-    return () => clearInterval(interval);
+
+      es.onerror = () => {
+        // SSE failed — fall back to mock
+        if (!closed && !mockInterval) {
+          setSseConnected(false);
+          es?.close();
+          es = null;
+          mockInterval = setInterval(() => {
+            setPnl((prev) => {
+              const delta = (Math.random() - 0.45) * 15;
+              const next = prev.value + delta;
+              return { value: next, positive: next >= 0 };
+            });
+          }, 3000);
+        }
+      };
+    } catch {
+      // EventSource constructor failed — use mock
+      mockInterval = setInterval(() => {
+        setPnl((prev) => {
+          const delta = (Math.random() - 0.45) * 15;
+          const next = prev.value + delta;
+          return { value: next, positive: next >= 0 };
+        });
+      }, 3000);
+    }
+
+    return () => {
+      closed = true;
+      es?.close();
+      if (mockInterval) clearInterval(mockInterval);
+    };
   }, []);
 
   const hitlRef = useRef<{ accept: (id: string) => void; reject: (id: string) => void } | null>(null);
@@ -65,7 +120,7 @@ export default function MerchantPage() {
           <span className="text-[11px] font-bold text-gray-300 tracking-widest">
             {t("merchant.title")} v2.0
           </span>
-          <ConnectionStatus connected={true} />
+          <ConnectionStatus connected={sseConnected} />
         </div>
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2">

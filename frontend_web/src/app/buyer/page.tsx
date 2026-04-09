@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
+import { apiClient } from "@/lib/api/axios-client";
 
 /* ── Mock inventory data (mirrors backend 50 SKUs) ── */
 const MOCK_SKUS = [
@@ -51,6 +52,13 @@ type FlashResult = {
   recommendation: string;
 };
 
+type AIRecommend = {
+  ai_recommendation: string;
+  risk_notes: string;
+  alternative_suggestions: string[];
+  status: string;
+};
+
 export default function BuyerPage() {
   const { t } = useI18n();
   const [query, setQuery] = useState("");
@@ -58,6 +66,8 @@ export default function BuyerPage() {
   const [phase, setPhase] = useState<"idle" | "searching" | "result" | "ordered">("idle");
   const [result, setResult] = useState<FlashResult | null>(null);
   const [qty, setQty] = useState(1000);
+  const [aiRec, setAiRec] = useState<AIRecommend | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
 
   useEffect(() => {
     if (!query.trim()) {
@@ -78,44 +88,98 @@ export default function BuyerPage() {
   const handleFlashOrder = useCallback(
     async (skuName: string) => {
       setPhase("searching");
-      await new Promise((r) => setTimeout(r, 1500));
 
-      const match = MOCK_SKUS.find(
-        (s) => s.name.toLowerCase().includes(skuName.toLowerCase()) || s.id.toLowerCase().includes(skuName.toLowerCase())
-      );
-
-      if (match) {
-        setResult({
-          status: "matched",
-          source_type: "LOCAL_INVENTORY",
-          sku_match: {
-            sku_id: match.id,
-            sku_name: match.name,
-            unit_price_usd: match.price,
-            stock_qty: match.stock,
-            profit_margin_pct: match.margin,
-            location: "SZ-A1",
-          },
-          estimated_delivery: match.stock >= qty ? "24 Hours" : "2-3 Business Days",
-          is_un_certified: true,
-          is_rcep_eligible: true,
-          recommendation: `Local match: ${match.name} @ $${match.price}/unit. UN Certified + RCEP 0% Tariff.`,
+      // Try real API first, fallback to local mock
+      try {
+        const { data } = await apiClient.post("/api/v1/buyer/flash-intent", {
+          sku: skuName,
+          quantity: qty,
+          target_country: "VN",
+          is_urgent: false,
         });
-      } else {
         setResult({
-          status: "no_match",
-          source_type: "REMOTE_ARBITRAGE",
-          sku_match: null,
-          estimated_delivery: "3-5 Business Days",
-          is_un_certified: false,
-          is_rcep_eligible: false,
-          recommendation: "No local inventory. Scatter broadcast initiated to external suppliers.",
+          status: data.status === "matched" ? "matched" : "no_match",
+          source_type: data.source_type,
+          sku_match: data.sku_match
+            ? {
+                sku_id: data.sku_match.sku_id,
+                sku_name: data.sku_match.sku_name,
+                unit_price_usd: data.sku_match.unit_price_usd,
+                stock_qty: data.sku_match.stock_qty,
+                profit_margin_pct: data.sku_match.profit_margin_pct,
+                location: data.sku_match.location,
+              }
+            : null,
+          estimated_delivery: data.estimated_delivery,
+          is_un_certified: data.is_un_certified,
+          is_rcep_eligible: data.is_rcep_eligible,
+          recommendation: data.recommendation,
         });
+      } catch {
+        // Fallback: local mock matching
+        const match = MOCK_SKUS.find(
+          (s) => s.name.toLowerCase().includes(skuName.toLowerCase()) || s.id.toLowerCase().includes(skuName.toLowerCase())
+        );
+        if (match) {
+          setResult({
+            status: "matched",
+            source_type: "LOCAL_INVENTORY",
+            sku_match: {
+              sku_id: match.id,
+              sku_name: match.name,
+              unit_price_usd: match.price,
+              stock_qty: match.stock,
+              profit_margin_pct: match.margin,
+              location: "SZ-A1",
+            },
+            estimated_delivery: match.stock >= qty ? "24 Hours" : "2-3 Business Days",
+            is_un_certified: true,
+            is_rcep_eligible: true,
+            recommendation: `Local match: ${match.name} @ $${match.price}/unit. UN Certified + RCEP 0% Tariff.`,
+          });
+        } else {
+          setResult({
+            status: "no_match",
+            source_type: "REMOTE_ARBITRAGE",
+            sku_match: null,
+            estimated_delivery: "3-5 Business Days",
+            is_un_certified: false,
+            is_rcep_eligible: false,
+            recommendation: "No local inventory. Scatter broadcast initiated to external suppliers.",
+          });
+        }
       }
       setPhase("result");
     },
     [qty]
   );
+
+  // Fetch DeepSeek AI recommendation when result is available
+  useEffect(() => {
+    if (phase !== "result" || !result?.sku_match) {
+      setAiRec(null);
+      return;
+    }
+    let cancelled = false;
+    setAiLoading(true);
+    apiClient
+      .post("/api/v1/buyer/ai-recommend", {
+        sku_name: result.sku_match.sku_name,
+        quantity: qty,
+        target_country: "VN",
+        unit_price_usd: result.sku_match.unit_price_usd,
+      })
+      .then(({ data }) => {
+        if (!cancelled) setAiRec(data);
+      })
+      .catch(() => {
+        if (!cancelled) setAiRec(null);
+      })
+      .finally(() => {
+        if (!cancelled) setAiLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [phase, result, qty]);
 
   const handleConfirmOrder = useCallback(() => {
     setPhase("ordered");
@@ -337,7 +401,48 @@ export default function BuyerPage() {
                   )}
                 </div>
 
-                <p className="text-xs text-gray-400 mb-5">{result.recommendation}</p>
+                <p className="text-xs text-gray-400 mb-4">{result.recommendation}</p>
+
+                {/* DeepSeek AI Recommendation Panel */}
+                {result.sku_match && (
+                  <div className="mb-4 p-3 rounded-lg bg-purple-500/5 border border-purple-500/20">
+                    <div className="flex items-center gap-2 mb-2">
+                      <div className="w-4 h-4 rounded bg-gradient-to-br from-purple-400 to-pink-500 flex items-center justify-center">
+                        <span className="text-[8px] text-white font-bold">AI</span>
+                      </div>
+                      <span className="text-[10px] text-purple-300 font-mono uppercase tracking-wider">
+                        DeepSeek Procurement Advisor
+                      </span>
+                      {aiLoading && <Loader2 className="w-3 h-3 text-purple-400 animate-spin ml-auto" />}
+                    </div>
+                    {aiLoading && !aiRec && (
+                      <p className="text-[11px] text-gray-500 italic">Analyzing procurement parameters...</p>
+                    )}
+                    {aiRec && aiRec.status === "ok" && (
+                      <div className="space-y-2">
+                        <p className="text-xs text-gray-300 leading-relaxed">{aiRec.ai_recommendation}</p>
+                        {aiRec.risk_notes && (
+                          <p className="text-[11px] text-amber-400/80 leading-relaxed">⚠ {aiRec.risk_notes}</p>
+                        )}
+                        {aiRec.alternative_suggestions.length > 0 && (
+                          <div className="flex flex-wrap gap-1 mt-1">
+                            {aiRec.alternative_suggestions.map((alt, i) => (
+                              <span
+                                key={i}
+                                className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 text-gray-400 border border-white/5"
+                              >
+                                {alt}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {aiRec && aiRec.status !== "ok" && (
+                      <p className="text-[11px] text-gray-500">{aiRec.ai_recommendation}</p>
+                    )}
+                  </div>
+                )}
 
                 {result.status === "matched" && (
                   <button

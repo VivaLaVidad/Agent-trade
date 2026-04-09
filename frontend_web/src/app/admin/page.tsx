@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, Suspense, lazy } from "react";
+import { useState, useEffect, Suspense, lazy } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import Link from "next/link";
 import { ArrowLeft, Lock, X } from "lucide-react";
@@ -9,6 +9,10 @@ import { AuditLogStream } from "@/components/admin/AuditLogStream";
 import { MOCK_KPIS, MOCK_TRADE_ROUTES } from "@/lib/api/mock-data";
 import { useI18n } from "@/lib/i18n";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
+import type { DashboardKPIs } from "@/lib/api/types";
+
+const API_BASE =
+  process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8900";
 
 const GlobeVisualization = lazy(() =>
   import("@/components/admin/GlobeVisualization").then((m) => ({
@@ -22,6 +26,23 @@ export default function AdminPage() {
   const [showTokenDialog, setShowTokenDialog] = useState(true);
   const [tokenInput, setTokenInput] = useState("");
   const [tokenError, setTokenError] = useState(false);
+  const [kpis, setKpis] = useState<DashboardKPIs>(MOCK_KPIS);
+
+  // Fetch real KPIs from backend, fallback to mock
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${API_BASE}/api/v1/admin/kpis`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (!cancelled && data && typeof data.total_inquiries === "number") {
+          setKpis(data);
+        }
+      })
+      .catch(() => {
+        // Keep mock KPIs
+      });
+    return () => { cancelled = true; };
+  }, []);
 
   const handleTokenSubmit = () => {
     if (tokenInput.trim().length >= 4) {
@@ -166,11 +187,11 @@ export default function AdminPage() {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <KPICard
             title={t("admin.inquiries")}
-            value={MOCK_KPIS.total_inquiries}
+            value={kpis.total_inquiries}
             gradient="from-blue-400 to-cyan-400"
           >
             <div className="flex items-end gap-1 h-8">
-              {MOCK_KPIS.inquiries_trend.map((v, i) => (
+              {kpis.inquiries_trend.map((v, i) => (
                 <div
                   key={i}
                   className="flex-1 bg-gradient-to-t from-blue-500/30 to-blue-400/10 rounded-sm"
@@ -182,7 +203,7 @@ export default function AdminPage() {
 
           <KPICard
             title={t("admin.hedge_success")}
-            value={MOCK_KPIS.hedge_success}
+            value={kpis.hedge_success}
             gradient="from-emerald-400 to-green-400"
           >
             <div className="flex items-center gap-3">
@@ -199,24 +220,24 @@ export default function AdminPage() {
                     fill="none"
                     stroke="#00ff88"
                     strokeWidth="3"
-                    strokeDasharray={`${MOCK_KPIS.hedge_success_rate * 0.942} 94.2`}
+                    strokeDasharray={`${kpis.hedge_success_rate * 0.942} 94.2`}
                     strokeLinecap="round"
                   />
                 </svg>
               </div>
               <span className="text-sm font-mono text-emerald-400">
-                {MOCK_KPIS.hedge_success_rate}%
+                {kpis.hedge_success_rate}%
               </span>
             </div>
           </KPICard>
 
           <KPICard
             title={t("admin.regguard_blocks")}
-            value={MOCK_KPIS.regguard_blocks}
+            value={kpis.regguard_blocks}
             gradient="from-red-400 to-orange-400"
           >
             <div className="flex gap-2">
-              {Object.entries(MOCK_KPIS.block_types).map(([type, count]) => (
+              {Object.entries(kpis.block_types).map(([type, count]) => (
                 <div key={type} className="text-center">
                   <div className="text-[10px] font-mono text-gray-500">{type}</div>
                   <div className="text-xs font-mono text-red-400">{count}</div>
