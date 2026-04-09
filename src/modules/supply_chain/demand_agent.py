@@ -17,11 +17,14 @@ from langchain_ollama import ChatOllama
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from core.logger import get_logger
+from core.system_prompt import OMNIEDGE_CORE_COMPACT
 
 logger = get_logger(__name__)
 
-_DEMAND_EXTRACT_PROMPT: str = """\
-You are an electronic components procurement analyst.
+_DEMAND_EXTRACT_PROMPT: str = OMNIEDGE_CORE_COMPACT + """\
+
+You are an industrial equipment and electronic components procurement analyst \
+for OmniEdge (全域工联), an AI-native cross-border B2B trade network.
 Parse the buyer's message and extract a structured demand. Output ONLY valid JSON:
 
 {

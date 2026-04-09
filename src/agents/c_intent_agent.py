@@ -19,6 +19,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from agents.state import TradeState, extract_json_from_llm
 from core.logger import get_logger
+from core.system_prompt import OMNIEDGE_CORE_COMPACT
 
 logger = get_logger(__name__)
 
@@ -99,7 +100,7 @@ def analyze_node(state: TradeState) -> dict[str, Any]:
     )
 
     messages: list = [
-        SystemMessage(content=_INTENT_SYSTEM_PROMPT),
+        SystemMessage(content=OMNIEDGE_CORE_COMPACT + "\n\n" + _INTENT_SYSTEM_PROMPT),
         HumanMessage(content=f"Customer email:\n\n{raw_inquiry}"),
     ]
 

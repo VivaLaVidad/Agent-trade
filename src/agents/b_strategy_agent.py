@@ -19,6 +19,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from agents.state import TradeState
 from core.logger import get_logger
+from core.system_prompt import OMNIEDGE_CORE_COMPACT
 
 logger = get_logger(__name__)
 
@@ -40,7 +41,7 @@ pricing terms, delivery timeline, samples, etc.).
 technical datasheets, etc.
 - Create subtle urgency (limited stock, seasonal pricing) without being pushy.
 - Use a proper business email structure: greeting → body → call-to-action → sign-off.
-- Sign off as "James Liu, Senior Sales Manager, TradeStealth Export Co., Ltd."
+- Sign off as "James Liu, Senior Sales Manager, OmniEdge (全域工联) Industrial Trade Network"
 
 Output the complete email (Subject line + Body). Do NOT wrap in JSON or code blocks."""
 
@@ -95,7 +96,7 @@ def draft_node(state: TradeState) -> dict[str, Any]:
 
     intent_json: str = json.dumps(intent, ensure_ascii=False, indent=2)
     messages: list = [
-        SystemMessage(content=_STRATEGY_SYSTEM_PROMPT),
+        SystemMessage(content=OMNIEDGE_CORE_COMPACT + "\n\n" + _STRATEGY_SYSTEM_PROMPT),
         HumanMessage(
             content=(
                 f"Parsed customer intent:\n"
