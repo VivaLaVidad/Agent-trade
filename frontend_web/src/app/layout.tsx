@@ -3,7 +3,7 @@ import { Providers } from "./providers";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "TradeForge — 锻合",
+  title: "OmniEdge — 全域工联",
   description: "AI-powered cross-border industrial trade platform",
 };
 

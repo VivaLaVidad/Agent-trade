@@ -28,7 +28,7 @@ export function LanguageSwitcher() {
         {LOCALE_LABELS[locale]}
       </button>
       {open && (
-        <div className="absolute right-0 top-full mt-1 bg-[#1a1a2e] border border-white/10 rounded-lg shadow-xl overflow-hidden z-50 min-w-[140px]">
+        <div className="absolute right-0 top-full mt-1 bg-[#1a1a2e] border border-white/10 rounded-lg shadow-xl overflow-y-auto z-50 min-w-[180px] max-h-[320px] bloomberg-scroll">
           {(Object.keys(LOCALE_LABELS) as Locale[]).map((loc) => (
             <button
               key={loc}

@@ -137,7 +137,7 @@ export default function AdminPage() {
               {t("admin.title").toUpperCase()}
             </h1>
             <p className="text-[10px] font-mono text-gray-600">
-              TradeForge {t("admin.title")}
+              OmniEdge {t("admin.title")}
             </p>
           </div>
         </div>

@@ -50,7 +50,7 @@ export default function HomePage() {
         className="text-center mb-16"
       >
         <h1 className="text-5xl font-light tracking-tight text-gray-900 mb-4">
-          Trade<span className="font-semibold">Forge</span>
+          Omni<span className="font-semibold">Edge</span>
         </h1>
         <p className="text-lg text-gray-500 max-w-md mx-auto">
           {t("brand.tagline")}

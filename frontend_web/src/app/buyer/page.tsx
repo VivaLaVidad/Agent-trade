@@ -132,7 +132,7 @@ export default function BuyerPage() {
             </Link>
             <div>
               <h1 className="text-sm font-light tracking-tight">
-                Trade<span className="font-bold text-emerald-400">Forge</span>
+                Omni<span className="font-bold text-emerald-400">Edge</span>
               </h1>
               <p className="text-[10px] text-gray-500 font-mono">{t("buyer.title")}</p>
             </div>
