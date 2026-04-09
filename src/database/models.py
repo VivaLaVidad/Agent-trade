@@ -45,7 +45,7 @@ from core.security import get_cipher
 
 # ─── Configuration ───────────────────────────────────────────
 class DBSettings(BaseSettings):
-    DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/tradestealth"
+    DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/omniedge"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

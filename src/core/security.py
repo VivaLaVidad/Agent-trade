@@ -34,7 +34,7 @@ _KEY_SIZE = 32
 
 # ─── Configuration ───────────────────────────────────────────
 class SecuritySettings(BaseSettings):
-    MACHINE_SECRET_SALT: str = "TradeStealth_v1_salt"
+    MACHINE_SECRET_SALT: str = "OmniEdge_v1_salt"
     AES_MASTER_KEY: str = ""  # hex-encoded 32-byte key
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}

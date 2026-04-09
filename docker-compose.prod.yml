@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════
-#  TradeStealth_Core — Production Docker Compose
+#  OmniEdge (全域工联) — Production Docker Compose
 # ═══════════════════════════════════════════════════
 
 services:
@@ -8,7 +8,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.backend
-    container_name: tradestealth-backend
+    container_name: omniedge-backend
     restart: unless-stopped
     env_file: .env
     ports:
@@ -25,12 +25,12 @@ services:
   # ─── PostgreSQL ───────────────────────────────────
   agent-postgres:
     image: postgres:15
-    container_name: tradestealth-postgres
+    container_name: omniedge-postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: tradestealth
+      POSTGRES_DB: omniedge
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -42,7 +42,7 @@ services:
   # ─── Redis ────────────────────────────────────────
   agent-redis:
     image: redis:7
-    container_name: tradestealth-redis
+    container_name: omniedge-redis
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]

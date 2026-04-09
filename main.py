@@ -1,5 +1,5 @@
 """
-TradeStealth_Core — FastAPI 启动入口
+OmniEdge (全域工联) — FastAPI 启动入口
 仅绑定 127.0.0.1，拒绝一切外部访问
 """
 
@@ -49,7 +49,7 @@ def _rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) -> JS
 # ─── Lifespan ────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    logger.info("Project Claw 暗箱平台启动中...")
+    logger.info("OmniEdge (全域工联) 平台启动中...")
 
     # 1. 许可证校验（DEMO_MODE 跳过）
     from core.demo_config import is_demo_mode

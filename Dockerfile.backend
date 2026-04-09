@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════
-#  TradeStealth_Core — Backend Production Dockerfile
+#  OmniEdge (全域工联) — Backend Production Dockerfile
 # ═══════════════════════════════════════════════════
 FROM python:3.12-slim
 
